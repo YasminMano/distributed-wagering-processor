@@ -21,6 +21,7 @@ export class ObservabilityService {
   private outboxRetries = 0;
   private pendingReferenceRetries = 0;
   private lockConflicts = 0;
+  private reconciliationDivergences = 0;
   private latencyCount = 0;
   private latencyTotalMs = 0;
   private latencyMaxMs = 0;
@@ -67,9 +68,15 @@ export class ObservabilityService {
     return false;
   }
 
+  recordReconciliationDivergence(): void {
+    this.reconciliationDivergences += 1;
+  }
+
   processMetrics(): Record<string, unknown> {
     return {
       duplicatesDetected: this.duplicatesDetected,
+      reconciliationDivergences:
+        this.reconciliationDivergences,
       retries: {
         outbox: this.outboxRetries,
         pendingReference:

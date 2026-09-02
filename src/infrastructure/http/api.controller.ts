@@ -534,6 +534,7 @@ export class ApiController {
         currency: string;
         materialized_balance: string;
         ledger_balance: string;
+        difference: string;
         consistent: boolean;
         ledger_entries: number;
       }>
@@ -554,6 +555,19 @@ export class ApiController {
             ),
             0
           )::text as ledger_balance,
+          (
+            w.balance -
+            coalesce(
+              sum(
+                case
+                  when l.direction = 'CREDIT'
+                    then l.amount
+                  else -l.amount
+                end
+              ),
+              0
+            )
+          )::numeric(38, 2)::text as difference,
           (
             w.balance =
             coalesce(
@@ -589,14 +603,37 @@ export class ApiController {
       );
     }
 
+    if (!result.consistent) {
+      this.observability.recordReconciliationDivergence();
+
+      this.observability.log(
+        'warn',
+        'wallet_reconciliation_divergence',
+        {
+          walletId: result.wallet_id,
+        },
+        {
+          checkedEntries: result.ledger_entries,
+        },
+      );
+    }
+
     return {
       walletId: result.wallet_id,
-      currency: result.currency,
-      materializedBalance:
-        result.materialized_balance,
-      ledgerBalance: result.ledger_balance,
-      ledgerEntries: result.ledger_entries,
+      storedBalance: {
+        amount: result.materialized_balance,
+        currency: result.currency,
+      },
+      calculatedBalance: {
+        amount: result.ledger_balance,
+        currency: result.currency,
+      },
+      difference: {
+        amount: result.difference,
+        currency: result.currency,
+      },
       consistent: result.consistent,
+      checkedEntries: result.ledger_entries,
     };
   }
 

@@ -75,7 +75,7 @@ describe('Outbox publisher integration', () => {
           eventType: 'OutboxConcurrencyTest',
           sequence: index,
         },
-        occurredAt: new Date(),
+        occurredAt: new Date('2000-01-01T00:00:00.000Z'),
         attempts: 0,
         nextAttemptAt: null,
         publishedAt: null,
