@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { EntityManager } from '@mikro-orm/postgresql';
 
+import { ObservabilityService } from '../observability/observability.service';
+
 interface PendingOutboxRow {
   id: string;
   aggregate_id: string;
@@ -41,7 +43,10 @@ export class OutboxPublisherWorker
   private stopping = false;
   private loop?: Promise<void>;
 
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    private readonly observability: ObservabilityService,
+  ) {}
 
   onModuleInit(): void {
     this.loop = this.run();
@@ -62,14 +67,16 @@ export class OutboxPublisherWorker
           await this.sleep(250);
         }
       } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: 'outbox_publisher_error',
+        this.observability.log(
+          'error',
+          'outbox_publisher_error',
+          {},
+          {
             error:
               error instanceof Error
-                ? error.message
-                : String(error),
-          }),
+                ? error.name
+                : 'UnknownError',
+          },
         );
 
         await this.sleep(1000);
@@ -127,8 +134,25 @@ export class OutboxPublisherWorker
             `,
             [row.id],
           );
-        } catch {
+        } catch (error) {
           const attempts = row.attempts + 1;
+
+          this.observability.recordRetry('outbox');
+
+          this.observability.log(
+            'warn',
+            'outbox_publish_retry',
+            {},
+            {
+              outboxMessageId: row.id,
+              eventType: row.event_type,
+              attempt: attempts,
+              error:
+                error instanceof Error
+                  ? error.name
+                  : 'UnknownError',
+            },
+          );
 
           const delaySeconds = Math.min(
             60,

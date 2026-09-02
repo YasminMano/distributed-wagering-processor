@@ -32,6 +32,7 @@ import {
   WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../domain/entities/wager-transaction';
+import { ObservabilityService } from '../observability/observability.service';
 
 interface CreateWalletBody {
   playerId?: string;
@@ -112,6 +113,7 @@ export class ApiController {
     private readonly em: EntityManager,
     private readonly createWallet: CreateWalletUseCase,
     private readonly processWager: ProcessWagerUseCase,
+    private readonly observability: ObservabilityService,
   ) {}
 
   @Post('wallets')
@@ -380,6 +382,7 @@ export class ApiController {
     }
 
     const kind = this.parseKind(body.kind);
+    const startedAt = Date.now();
 
     try {
       const result =
@@ -423,6 +426,32 @@ export class ApiController {
             body.referenceExternalTransactionId,
         });
 
+      const latencyMs = Date.now() - startedAt;
+
+      if (result.replayed) {
+        this.observability.recordDuplicate();
+      }
+
+      this.observability.recordProcessingLatency(
+        latencyMs,
+      );
+
+      this.observability.log(
+        'info',
+        'http_wager_processed',
+        {
+          correlationId: idempotencyKey,
+          transactionId: result.transaction.id,
+          walletId: result.transaction.walletId,
+          providerId: result.transaction.providerId,
+        },
+        {
+          status: result.transaction.status,
+          idempotentReplay: result.replayed,
+          latencyMs,
+        },
+      );
+
       if (
         result.transaction.status ===
         WagerTransactionStatus.PendingReference
@@ -454,6 +483,27 @@ export class ApiController {
           : {}),
       };
     } catch (error) {
+      const latencyMs = Date.now() - startedAt;
+
+      this.observability.recordLockConflictFrom(error);
+
+      this.observability.log(
+        'error',
+        'http_wager_failed',
+        {
+          correlationId: idempotencyKey,
+          walletId: body.walletId ?? null,
+          providerId: body.providerId ?? null,
+        },
+        {
+          error:
+            error instanceof Error
+              ? error.name
+              : 'UnknownError',
+          latencyMs,
+        },
+      );
+
       if (
         error instanceof IdempotencyConflictError ||
         error instanceof
@@ -547,6 +597,99 @@ export class ApiController {
       ledgerBalance: result.ledger_balance,
       ledgerEntries: result.ledger_entries,
       consistent: result.consistent,
+    };
+  }
+
+  @Get('metrics')
+  async metrics(): Promise<Record<string, unknown>> {
+    const statusRows = await this.em.execute<
+      Array<{
+        status: string;
+        count: number;
+      }>
+    >(
+      `
+        select status, count(*)::int as count
+        from wager_transactions
+        group by status
+        order by status
+      `,
+      [],
+      'all',
+    );
+
+    const outboxRows = await this.em.execute<
+      Array<{
+        outbox_lag_ms: number;
+      }>
+    >(
+      `
+        select
+          coalesce(
+            extract(
+              epoch from (
+                now() - min(occurred_at)
+              )
+            ) * 1000,
+            0
+          )::float8 as outbox_lag_ms
+        from outbox_messages
+        where published_at is null
+      `,
+      [],
+      'all',
+    );
+
+    let dlqMessages = 0;
+
+    try {
+      const attributes = await this.sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl:
+            process.env.SQS_WAGER_DLQ_URL ??
+            'http://localhost:4566/000000000000/wager-transactions-dlq.fifo',
+          AttributeNames: [
+            'ApproximateNumberOfMessages',
+            'ApproximateNumberOfMessagesNotVisible',
+          ],
+        }),
+      );
+
+      dlqMessages =
+        Number(
+          attributes.Attributes
+            ?.ApproximateNumberOfMessages ?? '0',
+        ) +
+        Number(
+          attributes.Attributes
+            ?.ApproximateNumberOfMessagesNotVisible ??
+            '0',
+        );
+    } catch (error) {
+      this.observability.log(
+        'warn',
+        'metrics_dlq_unavailable',
+        {},
+        {
+          error:
+            error instanceof Error
+              ? error.name
+              : 'UnknownError',
+        },
+      );
+    }
+
+    return {
+      transactionsByStatus: Object.fromEntries(
+        statusRows.map((row) => [
+          row.status,
+          row.count,
+        ]),
+      ),
+      ...this.observability.processMetrics(),
+      dlqMessages,
+      outboxLagMs:
+        outboxRows[0]?.outbox_lag_ms ?? 0,
     };
   }
 

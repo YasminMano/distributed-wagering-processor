@@ -14,6 +14,7 @@ import {
 
 import { ProcessWagerUseCase } from '../../application/use-cases/process-wager.use-case';
 import { WagerTransactionKind } from '../../domain/entities/wager-transaction';
+import { ObservabilityService } from '../observability/observability.service';
 
 const CONSUMER_NAME = 'wager-transactions-consumer';
 
@@ -64,6 +65,7 @@ export class WagerTransactionsSqsConsumer
 
   constructor(
     private readonly processor: ProcessWagerUseCase,
+    private readonly observability: ObservabilityService,
   ) {}
 
   onModuleInit(): void {
@@ -82,14 +84,16 @@ export class WagerTransactionsSqsConsumer
       try {
         await this.pollOnce();
       } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: 'sqs_consumer_error',
+        this.observability.log(
+          'error',
+          'sqs_consumer_error',
+          {},
+          {
             error:
               error instanceof Error
-                ? error.message
-                : String(error),
-          }),
+                ? error.name
+                : 'UnknownError',
+          },
         );
 
         await new Promise((resolve) =>
@@ -135,39 +139,98 @@ export class WagerTransactionsSqsConsumer
       .update(message.Body)
       .digest('hex');
 
-    await this.processor.executeFromInbox(
-      {
-        idempotencyKey: envelope.data.idempotencyKey,
-        providerId: envelope.data.providerId,
-        externalTransactionId:
-          envelope.data.externalTransactionId,
-        walletId: envelope.data.walletId,
-        playerId: envelope.data.playerId,
-        roundId: envelope.data.roundId,
-        gameId: envelope.data.gameId,
-        kind: envelope.data.kind,
-        amount: envelope.data.money.amount,
-        currency: envelope.data.money.currency,
-        referenceExternalTransactionId:
-          envelope.data.referenceExternalTransactionId,
-      },
-      {
-        consumerName: CONSUMER_NAME,
-        messageId: envelope.messageId,
-        payloadHash,
-        receivedAt: new Date(),
-      },
-    );
+    const startedAt = Date.now();
 
-    /*
-     * Só remove da fila depois que executeFromInbox()
-     * terminou. Nesse ponto a transação SQL já commitou.
-     */
-    await this.client.send(
-      new DeleteMessageCommand({
-        QueueUrl: this.queueUrl,
-        ReceiptHandle: message.ReceiptHandle,
-      }),
-    );
+    try {
+      const result =
+        await this.processor.executeFromInbox(
+          {
+            idempotencyKey:
+              envelope.data.idempotencyKey,
+            providerId: envelope.data.providerId,
+            externalTransactionId:
+              envelope.data.externalTransactionId,
+            walletId: envelope.data.walletId,
+            playerId: envelope.data.playerId,
+            roundId: envelope.data.roundId,
+            gameId: envelope.data.gameId,
+            kind: envelope.data.kind,
+            amount: envelope.data.money.amount,
+            currency: envelope.data.money.currency,
+            referenceExternalTransactionId:
+              envelope.data
+                .referenceExternalTransactionId,
+          },
+          {
+            consumerName: CONSUMER_NAME,
+            messageId: envelope.messageId,
+            payloadHash,
+            receivedAt: new Date(),
+          },
+        );
+
+      const latencyMs = Date.now() - startedAt;
+
+      if (
+        result.replayed ||
+        result.inboxDuplicate
+      ) {
+        this.observability.recordDuplicate();
+      }
+
+      this.observability.recordProcessingLatency(
+        latencyMs,
+      );
+
+      this.observability.log(
+        'info',
+        'sqs_wager_processed',
+        {
+          correlationId:
+            envelope.data.idempotencyKey,
+          messageId: envelope.messageId,
+          transactionId: result.transaction.id,
+          walletId: envelope.data.walletId,
+          providerId: envelope.data.providerId,
+        },
+        {
+          status: result.transaction.status,
+          duplicate:
+            result.replayed ||
+            result.inboxDuplicate,
+          latencyMs,
+        },
+      );
+
+      await this.client.send(
+        new DeleteMessageCommand({
+          QueueUrl: this.queueUrl,
+          ReceiptHandle: message.ReceiptHandle,
+        }),
+      );
+    } catch (error) {
+      this.observability.recordLockConflictFrom(error);
+
+      this.observability.log(
+        'error',
+        'sqs_wager_failed',
+        {
+          correlationId:
+            envelope.data.idempotencyKey,
+          messageId: envelope.messageId,
+          walletId: envelope.data.walletId,
+          providerId: envelope.data.providerId,
+        },
+        {
+          error:
+            error instanceof Error
+              ? error.name
+              : 'UnknownError',
+          latencyMs: Date.now() - startedAt,
+        },
+      );
+
+      throw error;
+    }
   }
 }

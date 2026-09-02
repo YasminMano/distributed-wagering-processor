@@ -19,10 +19,12 @@ import { AppService } from './app.service';
 import mikroOrmConfig from './mikro-orm.config';
 import { OutboxPublisherWorker } from './infrastructure/messaging/outbox-publisher.worker';
 import { WagerTransactionsSqsConsumer } from './infrastructure/messaging/wager-transactions-sqs.consumer';
+import { ObservabilityModule } from './infrastructure/observability/observability.module';
 
 @Module({
   imports: [
     MikroOrmModule.forRoot(mikroOrmConfig),
+    ObservabilityModule,
     PersistenceModule,
   ],
   controllers: [AppController, ApiController],

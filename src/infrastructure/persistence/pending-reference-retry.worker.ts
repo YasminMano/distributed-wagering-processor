@@ -10,6 +10,7 @@ import {
 } from '../../application/ports/wager-processing.store';
 import type { WagerProcessingStore } from '../../application/ports/wager-processing.store';
 import { RetryPendingReferenceWagersUseCase } from '../../application/use-cases/retry-pending-reference-wagers.use-case';
+import { ObservabilityService } from '../observability/observability.service';
 
 const RETRY_POLL_INTERVAL_MS = 100;
 
@@ -23,6 +24,7 @@ export class PendingReferenceRetryWorker
   constructor(
     @Inject(WAGER_PROCESSING_STORE)
     store: WagerProcessingStore,
+    private readonly observability: ObservabilityService,
   ) {
     this.retryUseCase =
       new RetryPendingReferenceWagersUseCase(store);
@@ -41,6 +43,25 @@ export class PendingReferenceRetryWorker
   }
 
   async runOnce(now = new Date()): Promise<number> {
-    return this.retryUseCase.processDue(now);
+    const processed =
+      await this.retryUseCase.processDue(now);
+
+    if (processed > 0) {
+      this.observability.recordRetry(
+        'pendingReference',
+        processed,
+      );
+
+      this.observability.log(
+        'info',
+        'pending_reference_retry_batch',
+        {},
+        {
+          processed,
+        },
+      );
+    }
+
+    return processed;
   }
 }
