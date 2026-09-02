@@ -11,6 +11,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 
 import { CreateWalletUseCase } from '../../../application/use-cases/create-wallet.use-case';
 import {
+  IdempotencyConflictError,
   ProcessWagerUseCase,
   WagerFailureCode,
 } from '../../../application/use-cases/process-wager.use-case';
@@ -175,5 +176,192 @@ describe('MikroOrmWagerProcessingStore integration', () => {
     expect(debitEntries[0].amount).toBe('80.00');
     expect(debitEntries[0].balanceBefore).toBe('100.00');
     expect(debitEntries[0].balanceAfter).toBe('20.00');
+  });
+  test('replays a committed BET without applying the financial effect twice', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const playerId = randomUUID();
+
+    const wallet = await createWalletUseCase.execute({
+      playerId,
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const idempotencyKey = randomUUID();
+    const externalTransactionId = randomUUID();
+
+    const wagerInput = {
+      idempotencyKey,
+      providerId: 'provider-idempotency',
+      externalTransactionId,
+      walletId: wallet.id,
+      playerId,
+      roundId: randomUUID(),
+      gameId: 'game-idempotency',
+      kind: WagerTransactionKind.Bet,
+      amount: '80.00',
+      currency: 'BRL',
+    };
+
+    /*
+     * A primeira execução usa uma transação/conexão.
+     */
+    const firstProcessor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    const first = await firstProcessor.execute(wagerInput);
+
+    expect(first.replayed).toBe(false);
+    expect(first.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    /*
+     * A segunda execução usa outro EntityManager.
+     *
+     * Portanto, o replay precisa ser descoberto a partir
+     * do PostgreSQL, não de memória da execução anterior.
+     */
+    const replayProcessor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    const replay = await replayProcessor.execute(wagerInput);
+
+    expect(replay.replayed).toBe(true);
+    expect(replay.transaction.id).toBe(
+      first.transaction.id,
+    );
+
+    const verificationEm = orm.em.fork();
+
+    const persistedWallet = await verificationEm.findOne(
+      WalletPersistence,
+      {
+        id: wallet.id,
+      },
+    );
+
+    expect(persistedWallet).not.toBeNull();
+    expect(persistedWallet?.balance).toBe('20.00');
+    expect(persistedWallet?.version).toBe(2);
+
+    const betTransactions = await verificationEm.find(
+      WagerTransactionPersistence,
+      {
+        wallet: wallet.id,
+        kind: WagerTransactionKind.Bet,
+      },
+    );
+
+    expect(betTransactions).toHaveLength(1);
+
+    const debitEntries = await verificationEm.find(
+      WalletLedgerEntryPersistence,
+      {
+        wallet: wallet.id,
+        direction: 'DEBIT',
+      },
+    );
+
+    expect(debitEntries).toHaveLength(1);
+    expect(debitEntries[0].amount).toBe('80.00');
+  });
+
+  test('rejects a committed idempotency key reused with a different payload', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const playerId = randomUUID();
+
+    const wallet = await createWalletUseCase.execute({
+      playerId,
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const idempotencyKey = randomUUID();
+    const externalTransactionId = randomUUID();
+
+    const firstProcessor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    await firstProcessor.execute({
+      idempotencyKey,
+      providerId: 'provider-conflict',
+      externalTransactionId,
+      walletId: wallet.id,
+      playerId,
+      roundId: 'round-conflict',
+      gameId: 'game-conflict',
+      kind: WagerTransactionKind.Bet,
+      amount: '80.00',
+      currency: 'BRL',
+    });
+
+    /*
+     * Mesma Idempotency-Key, porém amount diferente.
+     * Isso NÃO é replay: é conflito.
+     */
+    const conflictingProcessor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    await expect(
+      conflictingProcessor.execute({
+        idempotencyKey,
+        providerId: 'provider-conflict',
+        externalTransactionId,
+        walletId: wallet.id,
+        playerId,
+        roundId: 'round-conflict',
+        gameId: 'game-conflict',
+        kind: WagerTransactionKind.Bet,
+        amount: '70.00',
+        currency: 'BRL',
+      }),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+    const verificationEm = orm.em.fork();
+
+    const persistedWallet = await verificationEm.findOne(
+      WalletPersistence,
+      {
+        id: wallet.id,
+      },
+    );
+
+    expect(persistedWallet?.balance).toBe('20.00');
+    expect(persistedWallet?.version).toBe(2);
+
+    const betTransactions = await verificationEm.find(
+      WagerTransactionPersistence,
+      {
+        wallet: wallet.id,
+        kind: WagerTransactionKind.Bet,
+      },
+    );
+
+    expect(betTransactions).toHaveLength(1);
+
+    const debitEntries = await verificationEm.find(
+      WalletLedgerEntryPersistence,
+      {
+        wallet: wallet.id,
+        direction: 'DEBIT',
+      },
+    );
+
+    expect(debitEntries).toHaveLength(1);
   });
 });
