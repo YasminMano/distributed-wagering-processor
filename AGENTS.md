@@ -56,3 +56,9 @@ bun test
 - Review staged changes before committing.
 - Do not commit secrets or generated temporary files.
 - Use fixup commits only when correcting an existing commit.
+
+## Agent Git Safety
+
+- Never commit changes without explicit user approval.
+- Never push changes to the remote repository without explicit user approval.
+- Always show the diff and validation results before proposing a commit.
