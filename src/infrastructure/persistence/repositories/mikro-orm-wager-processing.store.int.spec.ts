@@ -509,4 +509,259 @@ describe('MikroOrmWagerProcessingStore integration', () => {
 
     expect(debitEntries).toHaveLength(1);
   });
+  test('deduplicates the same BET sent 50 times in parallel', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const playerId = randomUUID();
+    const wallet = await createWalletUseCase.execute({
+      playerId,
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const idempotencyKey = randomUUID();
+    const externalTransactionId = randomUUID();
+
+    const wagerInput = {
+      idempotencyKey,
+      providerId: 'provider-50-parallel',
+      externalTransactionId,
+      walletId: wallet.id,
+      playerId,
+      roundId: randomUUID(),
+      gameId: 'game-50-parallel',
+      kind: WagerTransactionKind.Bet,
+      amount: '10.00',
+      currency: 'BRL',
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => {
+        const processor = new ProcessWagerUseCase(
+          new MikroOrmWagerProcessingStore(
+            orm.em.fork(),
+          ),
+        );
+
+        return processor.execute(wagerInput);
+      }),
+    );
+
+    expect(
+      results.filter((result) => !result.replayed),
+    ).toHaveLength(1);
+
+    expect(
+      results.filter((result) => result.replayed),
+    ).toHaveLength(49);
+
+    expect(
+      new Set(
+        results.map(
+          (result) => result.transaction.id,
+        ),
+      ).size,
+    ).toBe(1);
+
+    const verificationEm = orm.em.fork();
+
+    const persistedWallet = await verificationEm.findOne(
+      WalletPersistence,
+      { id: wallet.id },
+    );
+
+    expect(persistedWallet?.balance).toBe('90.00');
+    expect(persistedWallet?.version).toBe(2);
+
+    const betTransactions = await verificationEm.find(
+      WagerTransactionPersistence,
+      {
+        wallet: wallet.id,
+        kind: WagerTransactionKind.Bet,
+      },
+    );
+
+    expect(betTransactions).toHaveLength(1);
+
+    const debitEntries = await verificationEm.find(
+      WalletLedgerEntryPersistence,
+      {
+        wallet: wallet.id,
+        direction: 'DEBIT',
+      },
+    );
+
+    expect(debitEntries).toHaveLength(1);
+    expect(debitEntries[0].amount).toBe('10.00');
+    expect(debitEntries[0].balanceBefore).toBe(
+      '100.00',
+    );
+    expect(debitEntries[0].balanceAfter).toBe('90.00');
+  });
+
+  test('processes different wallets in parallel without cross-wallet blocking', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const walletInputs = await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const playerId = randomUUID();
+        const wallet = await createWalletUseCase.execute({
+          playerId,
+          initialBalance: {
+            amount: '100.00',
+            currency: 'BRL',
+          },
+        });
+
+        return { wallet, playerId };
+      }),
+    );
+
+    const results = await Promise.all(
+      walletInputs.map(({ wallet, playerId }, index) => {
+        const processor = new ProcessWagerUseCase(
+          new MikroOrmWagerProcessingStore(
+            orm.em.fork(),
+          ),
+        );
+
+        return processor.execute({
+          idempotencyKey: randomUUID(),
+          providerId: `provider-parallel-wallet-${index}`,
+          externalTransactionId: randomUUID(),
+          walletId: wallet.id,
+          playerId,
+          roundId: randomUUID(),
+          gameId: 'game-parallel-wallets',
+          kind: WagerTransactionKind.Bet,
+          amount: '10.00',
+          currency: 'BRL',
+        });
+      }),
+    );
+
+    expect(
+      results.every(
+        (result) =>
+          result.transaction.status ===
+          WagerTransactionStatus.Processed,
+      ),
+    ).toBe(true);
+
+    const verificationEm = orm.em.fork();
+
+    for (const { wallet } of walletInputs) {
+      const persistedWallet =
+        await verificationEm.findOne(
+          WalletPersistence,
+          { id: wallet.id },
+        );
+
+      expect(persistedWallet?.balance).toBe('90.00');
+      expect(persistedWallet?.version).toBe(2);
+
+      const debitEntries = await verificationEm.find(
+        WalletLedgerEntryPersistence,
+        {
+          wallet: wallet.id,
+          direction: 'DEBIT',
+        },
+      );
+
+      expect(debitEntries).toHaveLength(1);
+      expect(debitEntries[0].amount).toBe('10.00');
+    }
+  });
+
+  test('serializes three independent processors competing for the same wallet', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const playerId = randomUUID();
+    const wallet = await createWalletUseCase.execute({
+      playerId,
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const baseInput = {
+      providerId: 'provider-three-processors',
+      walletId: wallet.id,
+      playerId,
+      roundId: randomUUID(),
+      gameId: 'game-three-processors',
+      kind: WagerTransactionKind.Bet,
+      amount: '40.00',
+      currency: 'BRL',
+    };
+
+    const processors = Array.from(
+      { length: 3 },
+      () =>
+        new ProcessWagerUseCase(
+          new MikroOrmWagerProcessingStore(
+            orm.em.fork(),
+          ),
+        ),
+    );
+
+    const results = await Promise.all(
+      processors.map((processor) =>
+        processor.execute({
+          ...baseInput,
+          idempotencyKey: randomUUID(),
+          externalTransactionId: randomUUID(),
+        }),
+      ),
+    );
+
+    expect(
+      results.filter(
+        (result) =>
+          result.transaction.status ===
+          WagerTransactionStatus.Processed,
+      ),
+    ).toHaveLength(2);
+
+    const rejected = results.filter(
+      (result) =>
+        result.transaction.status ===
+        WagerTransactionStatus.Rejected,
+    );
+
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].transaction.failureCode).toBe(
+      WagerFailureCode.InsufficientFunds,
+    );
+
+    const verificationEm = orm.em.fork();
+
+    const persistedWallet = await verificationEm.findOne(
+      WalletPersistence,
+      { id: wallet.id },
+    );
+
+    expect(persistedWallet?.balance).toBe('20.00');
+    expect(persistedWallet?.version).toBe(3);
+
+    const debitEntries = await verificationEm.find(
+      WalletLedgerEntryPersistence,
+      {
+        wallet: wallet.id,
+        direction: 'DEBIT',
+      },
+    );
+
+    expect(debitEntries).toHaveLength(2);
+  });
+
 });
