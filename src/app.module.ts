@@ -7,8 +7,14 @@ import {
   WAGER_PROCESSING_STORE,
   WagerProcessingStore,
 } from './application/ports/wager-processing.store';
+import {
+  WALLET_CREATION_STORE,
+  WalletCreationStore,
+} from './application/ports/wallet-creation.store';
+import { CreateWalletUseCase } from './application/use-cases/create-wallet.use-case';
 import { ProcessWagerUseCase } from './application/use-cases/process-wager.use-case';
 import { AppController } from './app.controller';
+import { ApiController } from './infrastructure/http/api.controller';
 import { AppService } from './app.service';
 import mikroOrmConfig from './mikro-orm.config';
 import { OutboxPublisherWorker } from './infrastructure/messaging/outbox-publisher.worker';
@@ -19,11 +25,17 @@ import { WagerTransactionsSqsConsumer } from './infrastructure/messaging/wager-t
     MikroOrmModule.forRoot(mikroOrmConfig),
     PersistenceModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, ApiController],
   providers: [
     AppService,
     WagerTransactionsSqsConsumer,
     OutboxPublisherWorker,
+    {
+      provide: CreateWalletUseCase,
+      inject: [WALLET_CREATION_STORE],
+      useFactory: (store: WalletCreationStore) =>
+        new CreateWalletUseCase(store),
+    },
     {
       provide: ProcessWagerUseCase,
       inject: [WAGER_PROCESSING_STORE],

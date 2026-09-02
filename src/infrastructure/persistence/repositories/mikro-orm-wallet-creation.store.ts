@@ -2,10 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { EntityManager } from '@mikro-orm/postgresql';
 
 import { WalletCreationStore } from '../../../application/ports/wallet-creation.store';
+import type { OutboxMessageInput } from '../../../application/ports/wager-processing.store';
 import { Wallet } from '../../../domain/entities/wallet';
 import { WalletLedgerEntry } from '../../../domain/entities/wallet-ledger-entry';
 import { WagerTransaction } from '../../../domain/entities/wager-transaction';
 import { WagerTransactionPersistence } from '../entities/wager-transaction.persistence';
+import { OutboxMessagePersistence } from '../entities/outbox-message.persistence';
 import { WalletLedgerEntryPersistence } from '../entities/wallet-ledger-entry.persistence';
 import { WalletPersistence } from '../entities/wallet.persistence';
 import { WagerTransactionMapper } from '../mappers/wager-transaction.mapper';
@@ -22,6 +24,7 @@ export class MikroOrmWalletCreationStore
     wallet: Wallet,
     openingTransaction?: WagerTransaction,
     openingLedgerEntry?: WalletLedgerEntry,
+    outboxMessages: OutboxMessageInput[] = [],
   ): Promise<void> {
     if (
       Boolean(openingTransaction) !==
@@ -52,6 +55,19 @@ export class MikroOrmWalletCreationStore
             openingLedgerEntry,
           ),
         );
+      }
+
+      for (const message of outboxMessages) {
+        await em.insert(OutboxMessagePersistence, {
+          id: message.id,
+          aggregateId: message.aggregateId,
+          eventType: message.eventType,
+          payload: message.payload,
+          occurredAt: message.occurredAt,
+          attempts: 0,
+          nextAttemptAt: null,
+          publishedAt: null,
+        });
       }
     });
   }

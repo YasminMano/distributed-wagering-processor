@@ -88,10 +88,68 @@ export class CreateWalletUseCase {
       createdAt: now,
     });
 
+    const processedEventId = randomUUID();
+    const balanceEventId = randomUUID();
+
     await this.walletCreationStore.create(
       wallet,
       openingTransaction,
       openingLedgerEntry,
+      [
+        {
+          id: processedEventId,
+          aggregateId: openingTransaction.id,
+          eventType: 'WagerTransactionProcessed',
+          occurredAt: now,
+          payload: {
+            eventId: processedEventId,
+            eventType: 'WagerTransactionProcessed',
+            aggregateId: openingTransaction.id,
+            correlationId: idempotencyKey,
+            occurredAt: now.toISOString(),
+            version: 1,
+            data: {
+              transactionId: openingTransaction.id,
+              providerId: openingTransaction.providerId,
+              externalTransactionId:
+                openingTransaction.externalTransactionId,
+              walletId,
+              playerId: input.playerId,
+              roundId: openingTransaction.roundId,
+              gameId: openingTransaction.gameId,
+              kind: openingTransaction.kind,
+              money: initialBalance.toJSON(),
+              status: openingTransaction.status,
+              failureCode: null,
+              referenceExternalTransactionId: null,
+            },
+          },
+        },
+        {
+          id: balanceEventId,
+          aggregateId: walletId,
+          eventType: 'WalletBalanceChanged',
+          occurredAt: now,
+          payload: {
+            eventId: balanceEventId,
+            eventType: 'WalletBalanceChanged',
+            aggregateId: walletId,
+            correlationId: idempotencyKey,
+            occurredAt: now.toISOString(),
+            version: 1,
+            data: {
+              walletId,
+              transactionId,
+              direction: LedgerDirection.Credit,
+              money: initialBalance.toJSON(),
+              balanceBefore:
+                Money.zero(initialBalance.currency).toJSON(),
+              balanceAfter: initialBalance.toJSON(),
+              walletVersion: wallet.version,
+            },
+          },
+        },
+      ],
     );
 
     return wallet;

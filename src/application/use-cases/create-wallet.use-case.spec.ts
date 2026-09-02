@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
 import { WalletCreationStore } from '../ports/wallet-creation.store';
+import type { OutboxMessageInput } from '../ports/wager-processing.store';
 import { Wallet } from '../../domain/entities/wallet';
 import {
   LedgerDirection,
@@ -18,17 +19,20 @@ class FakeWalletCreationStore implements WalletCreationStore {
     wallet: Wallet;
     openingTransaction?: WagerTransaction;
     openingLedgerEntry?: WalletLedgerEntry;
+    outboxMessages: OutboxMessageInput[];
   }> = [];
 
   async create(
     wallet: Wallet,
     openingTransaction?: WagerTransaction,
     openingLedgerEntry?: WalletLedgerEntry,
+    outboxMessages: OutboxMessageInput[] = [],
   ): Promise<void> {
     this.calls.push({
       wallet,
       openingTransaction,
       openingLedgerEntry,
+      outboxMessages,
     });
   }
 }
@@ -64,6 +68,7 @@ describe('CreateWalletUseCase', () => {
 
     expect(call.openingTransaction).toBeUndefined();
     expect(call.openingLedgerEntry).toBeUndefined();
+    expect(call.outboxMessages).toHaveLength(0);
   });
 
   test('creates opening transaction and credit ledger for a positive initial balance', async () => {
@@ -113,6 +118,16 @@ describe('CreateWalletUseCase', () => {
     );
     expect(openingLedgerEntry.walletId).toBe(wallet.id);
     expect(openingLedgerEntry.isBalanced()).toBe(true);
+
+    expect(call.outboxMessages).toHaveLength(2);
+    expect(
+      call.outboxMessages.map(
+        (message) => message.eventType,
+      ),
+    ).toEqual([
+      'WagerTransactionProcessed',
+      'WalletBalanceChanged',
+    ]);
   });
 
   test('does not persist a wallet with a negative initial balance', async () => {
