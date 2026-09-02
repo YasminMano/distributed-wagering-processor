@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  InboxMessageInput,
   WagerProcessingStore,
   WagerProcessingUnitOfWork,
 } from '../ports/wager-processing.store';
@@ -44,6 +45,13 @@ export class ExternalTransactionConflictError extends Error {
   }
 }
 
+export class InboxMessageConflictError extends Error {
+  constructor() {
+    super('Inbox message id was already used with a different payload');
+    this.name = 'InboxMessageConflictError';
+  }
+}
+
 export class WalletNotFoundError extends Error {
   constructor(walletId: string) {
     super(`Wallet ${walletId} was not found`);
@@ -70,6 +78,11 @@ export interface ProcessWagerResult {
   replayed: boolean;
 }
 
+export interface ProcessWagerFromInboxResult
+  extends ProcessWagerResult {
+  inboxDuplicate: boolean;
+}
+
 export class ProcessWagerUseCase {
   constructor(
     private readonly store: WagerProcessingStore,
@@ -90,180 +103,241 @@ export class ProcessWagerUseCase {
       money,
     );
 
-    return this.store.execute(async (unitOfWork) => {
-      const existing =
-        await unitOfWork.findTransactionByIdempotencyKey(
-          input.idempotencyKey,
-        );
-
-      if (existing) {
-        return this.handleExisting(
-          existing,
-          payloadHash,
-        );
-      }
-
-      const wallet = await unitOfWork.findWalletForUpdate(
-        input.walletId,
-      );
-
-      if (!wallet) {
-        throw new WalletNotFoundError(input.walletId);
-      }
-
-      /*
-       * Re-check after acquiring the wallet lock.
-       *
-       * Two concurrent requests can both observe that the
-       * idempotency key does not exist before one of them
-       * obtains the wallet lock.
-       */
-      const existingAfterLock =
-        await unitOfWork.findTransactionByIdempotencyKey(
-          input.idempotencyKey,
-        );
-
-      if (existingAfterLock) {
-        return this.handleExisting(
-          existingAfterLock,
-          payloadHash,
-        );
-      }
-
-      const existingExternal =
-        await unitOfWork.findTransactionByProviderAndExternalId(
-          input.providerId,
-          input.externalTransactionId,
-        );
-
-      if (existingExternal) {
-        throw new ExternalTransactionConflictError();
-      }
-
-      const now = new Date();
-
-      const transaction = WagerTransaction.create({
-        id: randomUUID(),
-        providerId: input.providerId,
-        externalTransactionId:
-          input.externalTransactionId,
-        idempotencyKey: input.idempotencyKey,
-        payloadHash,
-        walletId: input.walletId,
-        playerId: input.playerId,
-        roundId: input.roundId,
-        gameId: input.gameId,
-        kind: input.kind,
-        money,
-        referenceExternalTransactionId:
-          input.referenceExternalTransactionId,
-        createdAt: now,
-      });
-
-      if (wallet.playerId !== input.playerId) {
-        transaction.reject(
-          WagerFailureCode.PlayerMismatch,
-        );
-
-        await unitOfWork.insertTransaction(transaction);
-
-        return {
-          transaction,
-          replayed: false,
-        };
-      }
-
-      if (wallet.currency !== money.currency) {
-        transaction.reject(
-          WagerFailureCode.CurrencyMismatch,
-        );
-
-        await unitOfWork.insertTransaction(transaction);
-
-        return {
-          transaction,
-          replayed: false,
-        };
-      }
-
-      if (
-        input.kind === WagerTransactionKind.Refund ||
-        input.kind === WagerTransactionKind.Rollback
-      ) {
-        return this.processReversal(
-          unitOfWork,
-          wallet,
-          transaction,
-          money,
-          now,
-        );
-      }
-
-      if (
-        input.kind === WagerTransactionKind.Bet &&
-        wallet.balance.isLessThan(money)
-      ) {
-        transaction.reject(
-          WagerFailureCode.InsufficientFunds,
-        );
-
-        await unitOfWork.insertTransaction(transaction);
-
-        return {
-          transaction,
-          replayed: false,
-        };
-      }
-
-      if (input.kind === WagerTransactionKind.Loss) {
-        transaction.markProcessed(undefined, now);
-
-        await unitOfWork.insertTransaction(transaction);
-
-        return {
-          transaction,
-          replayed: false,
-        };
-      }
-
-      const balanceBefore = wallet.balance;
-
-      const direction =
-        input.kind === WagerTransactionKind.Bet
-          ? LedgerDirection.Debit
-          : LedgerDirection.Credit;
-
-      if (direction === LedgerDirection.Debit) {
-        wallet.debit(money);
-      } else {
-        wallet.credit(money);
-      }
-
-      transaction.markProcessed(undefined, now);
-
-      const ledgerEntry = WalletLedgerEntry.create({
-        id: randomUUID(),
-        walletId: wallet.id,
-        transactionId: transaction.id,
-        direction,
-        money,
-        balanceBefore,
-        balanceAfter: wallet.balance,
-        createdAt: now,
-      });
-
-      await this.persistFinancialMovement(
+    return this.store.execute((unitOfWork) =>
+      this.processInsideTransaction(
         unitOfWork,
-        wallet,
-        transaction,
-        ledgerEntry,
+        input,
+        money,
+        payloadHash,
+      ),
+    );
+  }
+
+  async executeFromInbox(
+    input: ProcessWagerInput,
+    inbox: InboxMessageInput,
+  ): Promise<ProcessWagerFromInboxResult> {
+    this.assertSupportedKind(input.kind);
+
+    const money = Money.from({
+      amount: input.amount,
+      currency: input.currency,
+    });
+
+    const payloadHash = this.createPayloadHash(
+      input,
+      money,
+    );
+
+    return this.store.execute(async (unitOfWork) => {
+      const claim =
+        await unitOfWork.claimInboxMessage(inbox);
+
+      if (claim === 'CONFLICT') {
+        throw new InboxMessageConflictError();
+      }
+
+      const result =
+        await this.processInsideTransaction(
+          unitOfWork,
+          input,
+          money,
+          payloadHash,
+        );
+
+      if (claim === 'CLAIMED') {
+        await unitOfWork.markInboxMessageProcessed(
+          inbox.consumerName,
+          inbox.messageId,
+          new Date(),
+        );
+      }
+
+      return {
+        ...result,
+        inboxDuplicate: claim === 'DUPLICATE',
+      };
+    });
+  }
+
+  private async processInsideTransaction(
+    unitOfWork: WagerProcessingUnitOfWork,
+    input: ProcessWagerInput,
+    money: Money,
+    payloadHash: string,
+  ): Promise<ProcessWagerResult> {
+    const existing =
+      await unitOfWork.findTransactionByIdempotencyKey(
+        input.idempotencyKey,
       );
+
+    if (existing) {
+      return this.handleExisting(
+        existing,
+        payloadHash,
+      );
+    }
+
+    const wallet = await unitOfWork.findWalletForUpdate(
+      input.walletId,
+    );
+
+    if (!wallet) {
+      throw new WalletNotFoundError(input.walletId);
+    }
+
+    /*
+     * Re-check after acquiring the wallet lock.
+     *
+     * Two concurrent requests can both observe that the
+     * idempotency key does not exist before one of them
+     * obtains the wallet lock.
+     */
+    const existingAfterLock =
+      await unitOfWork.findTransactionByIdempotencyKey(
+        input.idempotencyKey,
+      );
+
+    if (existingAfterLock) {
+      return this.handleExisting(
+        existingAfterLock,
+        payloadHash,
+      );
+    }
+
+    const existingExternal =
+      await unitOfWork.findTransactionByProviderAndExternalId(
+        input.providerId,
+        input.externalTransactionId,
+      );
+
+    if (existingExternal) {
+      throw new ExternalTransactionConflictError();
+    }
+
+    const now = new Date();
+
+    const transaction = WagerTransaction.create({
+      id: randomUUID(),
+      providerId: input.providerId,
+      externalTransactionId:
+        input.externalTransactionId,
+      idempotencyKey: input.idempotencyKey,
+      payloadHash,
+      walletId: input.walletId,
+      playerId: input.playerId,
+      roundId: input.roundId,
+      gameId: input.gameId,
+      kind: input.kind,
+      money,
+      referenceExternalTransactionId:
+        input.referenceExternalTransactionId,
+      createdAt: now,
+    });
+
+    if (wallet.playerId !== input.playerId) {
+      transaction.reject(
+        WagerFailureCode.PlayerMismatch,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
 
       return {
         transaction,
         replayed: false,
       };
+    }
+
+    if (wallet.currency !== money.currency) {
+      transaction.reject(
+        WagerFailureCode.CurrencyMismatch,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (
+      input.kind === WagerTransactionKind.Refund ||
+      input.kind === WagerTransactionKind.Rollback
+    ) {
+      return this.processReversal(
+        unitOfWork,
+        wallet,
+        transaction,
+        money,
+        now,
+      );
+    }
+
+    if (
+      input.kind === WagerTransactionKind.Bet &&
+      wallet.balance.isLessThan(money)
+    ) {
+      transaction.reject(
+        WagerFailureCode.InsufficientFunds,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (input.kind === WagerTransactionKind.Loss) {
+      transaction.markProcessed(undefined, now);
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    const balanceBefore = wallet.balance;
+
+    const direction =
+      input.kind === WagerTransactionKind.Bet
+        ? LedgerDirection.Debit
+        : LedgerDirection.Credit;
+
+    if (direction === LedgerDirection.Debit) {
+      wallet.debit(money);
+    } else {
+      wallet.credit(money);
+    }
+
+    transaction.markProcessed(undefined, now);
+
+    const ledgerEntry = WalletLedgerEntry.create({
+      id: randomUUID(),
+      walletId: wallet.id,
+      transactionId: transaction.id,
+      direction,
+      money,
+      balanceBefore,
+      balanceAfter: wallet.balance,
+      createdAt: now,
     });
+
+    await this.persistFinancialMovement(
+      unitOfWork,
+      wallet,
+      transaction,
+      ledgerEntry,
+    );
+
+    return {
+      transaction,
+      replayed: false,
+    };
   }
 
   async retryPendingReference(

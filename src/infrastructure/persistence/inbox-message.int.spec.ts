@@ -9,6 +9,12 @@ import {
 } from 'bun:test';
 import { MikroORM } from '@mikro-orm/postgresql';
 
+import {
+  ProcessWagerUseCase,
+  WalletNotFoundError,
+} from '../../application/use-cases/process-wager.use-case';
+import { WagerTransactionKind } from '../../domain/entities/wager-transaction';
+
 import mikroOrmConfig from '../../mikro-orm.config';
 import { InboxMessagePersistence } from './entities/inbox-message.persistence';
 import { MikroOrmWagerProcessingStore } from './repositories/mikro-orm-wager-processing.store';
@@ -136,4 +142,46 @@ describe('Inbox persistence integration', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].payloadHash).toBe('b'.repeat(64));
   });
+  test('rolls back inbox claim when financial processing fails', async () => {
+    const consumerName = 'wager-transactions-consumer';
+    const messageId = randomUUID();
+
+    const processor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    await expect(
+      processor.executeFromInbox(
+        {
+          idempotencyKey: randomUUID(),
+          providerId: 'provider-rollback-test',
+          externalTransactionId: randomUUID(),
+          walletId: randomUUID(),
+          playerId: randomUUID(),
+          roundId: randomUUID(),
+          gameId: 'game-rollback-test',
+          kind: WagerTransactionKind.Bet,
+          amount: '10.00',
+          currency: 'BRL',
+        },
+        {
+          consumerName,
+          messageId,
+          payloadHash: 'd'.repeat(64),
+          receivedAt: new Date(),
+        },
+      ),
+    ).rejects.toBeInstanceOf(WalletNotFoundError);
+
+    const inbox = await orm.em.fork().findOne(
+      InboxMessagePersistence,
+      {
+        consumerName,
+        messageId,
+      },
+    );
+
+    expect(inbox).toBeNull();
+  });
+
 });
