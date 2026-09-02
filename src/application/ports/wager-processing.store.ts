@@ -1,0 +1,38 @@
+import { Wallet } from '../../domain/entities/wallet';
+import { WalletLedgerEntry } from '../../domain/entities/wallet-ledger-entry';
+import { WagerTransaction } from '../../domain/entities/wager-transaction';
+
+export const WAGER_PROCESSING_STORE = Symbol(
+  'WAGER_PROCESSING_STORE',
+);
+
+export interface WagerProcessingUnitOfWork {
+  findWalletForUpdate(id: string): Promise<Wallet | null>;
+
+  findTransactionByIdempotencyKey(
+    idempotencyKey: string,
+  ): Promise<WagerTransaction | null>;
+
+  findTransactionByProviderAndExternalId(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | null>;
+
+  updateWallet(wallet: Wallet): Promise<void>;
+
+  insertTransaction(
+    transaction: WagerTransaction,
+  ): Promise<void>;
+
+  insertLedgerEntry(
+    entry: WalletLedgerEntry,
+  ): Promise<void>;
+}
+
+export interface WagerProcessingStore {
+  execute<T>(
+    work: (
+      unitOfWork: WagerProcessingUnitOfWork,
+    ) => Promise<T>,
+  ): Promise<T>;
+}
