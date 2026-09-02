@@ -18,6 +18,14 @@ export type InboxClaimResult =
   | 'DUPLICATE'
   | 'CONFLICT';
 
+export interface OutboxMessageInput {
+  id: string;
+  aggregateId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  occurredAt: Date;
+}
+
 export interface WagerProcessingUnitOfWork {
   findWalletForUpdate(id: string): Promise<Wallet | null>;
 
@@ -55,6 +63,10 @@ export interface WagerProcessingUnitOfWork {
 
   insertLedgerEntry(
     entry: WalletLedgerEntry,
+  ): Promise<void>;
+
+  insertOutboxMessage(
+    message: OutboxMessageInput,
   ): Promise<void>;
 
   claimInboxMessage(

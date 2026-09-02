@@ -241,6 +241,11 @@ export class ProcessWagerUseCase {
       );
 
       await unitOfWork.insertTransaction(transaction);
+      await this.enqueueTransactionStatusEvent(
+        unitOfWork,
+        transaction,
+        now,
+      );
 
       return {
         transaction,
@@ -254,6 +259,11 @@ export class ProcessWagerUseCase {
       );
 
       await unitOfWork.insertTransaction(transaction);
+      await this.enqueueTransactionStatusEvent(
+        unitOfWork,
+        transaction,
+        now,
+      );
 
       return {
         transaction,
@@ -283,6 +293,11 @@ export class ProcessWagerUseCase {
       );
 
       await unitOfWork.insertTransaction(transaction);
+      await this.enqueueTransactionStatusEvent(
+        unitOfWork,
+        transaction,
+        now,
+      );
 
       return {
         transaction,
@@ -294,6 +309,11 @@ export class ProcessWagerUseCase {
       transaction.markProcessed(undefined, now);
 
       await unitOfWork.insertTransaction(transaction);
+      await this.enqueueTransactionStatusEvent(
+        unitOfWork,
+        transaction,
+        now,
+      );
 
       return {
         transaction,
@@ -612,10 +632,28 @@ export class ProcessWagerUseCase {
   ): Promise<void> {
     if (isRetry) {
       await unitOfWork.updateTransaction(transaction);
+    } else {
+      await unitOfWork.insertTransaction(transaction);
+    }
+
+    /*
+     * Não publica um novo PendingReference a cada tentativa.
+     * O primeiro pending já foi registrado; retries só geram
+     * novo evento quando chegam a um estado terminal.
+     */
+    if (
+      isRetry &&
+      transaction.status ===
+        WagerTransactionStatus.PendingReference
+    ) {
       return;
     }
 
-    await unitOfWork.insertTransaction(transaction);
+    await this.enqueueTransactionStatusEvent(
+      unitOfWork,
+      transaction,
+      transaction.processedAt ?? new Date(),
+    );
   }
 
   private isAllowedReference(
@@ -657,6 +695,124 @@ export class ProcessWagerUseCase {
       await unitOfWork.insertTransaction(transaction);
     }
     await unitOfWork.insertLedgerEntry(ledgerEntry);
+
+    const occurredAt =
+      transaction.processedAt ?? ledgerEntry.createdAt;
+
+    await this.enqueueTransactionStatusEvent(
+      unitOfWork,
+      transaction,
+      occurredAt,
+    );
+
+    await this.enqueueWalletBalanceChanged(
+      unitOfWork,
+      transaction,
+      ledgerEntry,
+      wallet.version,
+      occurredAt,
+    );
+  }
+
+  private async enqueueTransactionStatusEvent(
+    unitOfWork: WagerProcessingUnitOfWork,
+    transaction: WagerTransaction,
+    occurredAt: Date,
+  ): Promise<void> {
+    let eventType: string | undefined;
+
+    if (
+      transaction.status ===
+      WagerTransactionStatus.Processed
+    ) {
+      eventType = 'WagerTransactionProcessed';
+    } else if (
+      transaction.status ===
+      WagerTransactionStatus.Rejected
+    ) {
+      eventType = 'WagerTransactionRejected';
+    } else if (
+      transaction.status ===
+      WagerTransactionStatus.PendingReference
+    ) {
+      eventType = 'WagerTransactionPendingReference';
+    }
+
+    if (!eventType) {
+      return;
+    }
+
+    const eventId = randomUUID();
+
+    await unitOfWork.insertOutboxMessage({
+      id: eventId,
+      aggregateId: transaction.id,
+      eventType,
+      occurredAt,
+      payload: {
+        eventId,
+        eventType,
+        aggregateId: transaction.id,
+        correlationId: transaction.idempotencyKey,
+        occurredAt: occurredAt.toISOString(),
+        version: 1,
+        data: {
+          transactionId: transaction.id,
+          providerId: transaction.providerId,
+          externalTransactionId:
+            transaction.externalTransactionId,
+          walletId: transaction.walletId,
+          playerId: transaction.playerId,
+          roundId: transaction.roundId,
+          gameId: transaction.gameId,
+          kind: transaction.kind,
+          money: transaction.money.toJSON(),
+          status: transaction.status,
+          failureCode:
+            transaction.failureCode ?? null,
+          referenceExternalTransactionId:
+            transaction.referenceExternalTransactionId ??
+            null,
+        },
+      },
+    });
+  }
+
+  private async enqueueWalletBalanceChanged(
+    unitOfWork: WagerProcessingUnitOfWork,
+    transaction: WagerTransaction,
+    ledgerEntry: WalletLedgerEntry,
+    walletVersion: number,
+    occurredAt: Date,
+  ): Promise<void> {
+    const eventId = randomUUID();
+    const eventType = 'WalletBalanceChanged';
+
+    await unitOfWork.insertOutboxMessage({
+      id: eventId,
+      aggregateId: transaction.walletId,
+      eventType,
+      occurredAt,
+      payload: {
+        eventId,
+        eventType,
+        aggregateId: transaction.walletId,
+        correlationId: transaction.idempotencyKey,
+        occurredAt: occurredAt.toISOString(),
+        version: 1,
+        data: {
+          walletId: transaction.walletId,
+          transactionId: transaction.id,
+          direction: ledgerEntry.direction,
+          money: ledgerEntry.money.toJSON(),
+          balanceBefore:
+            ledgerEntry.balanceBefore.toJSON(),
+          balanceAfter:
+            ledgerEntry.balanceAfter.toJSON(),
+          walletVersion,
+        },
+      },
+    });
   }
 
   private handleExisting(

@@ -8,6 +8,7 @@ import {
 import {
   InboxClaimResult,
   InboxMessageInput,
+  OutboxMessageInput,
   WagerProcessingStore,
   WagerProcessingUnitOfWork,
 } from '../ports/wager-processing.store';
@@ -34,6 +35,7 @@ class FakeWagerProcessingUnitOfWork
 {
   readonly transactions: WagerTransaction[] = [];
   readonly ledgerEntries: WalletLedgerEntry[] = [];
+  readonly outboxMessages: OutboxMessageInput[] = [];
   updateWalletCalls = 0;
 
   constructor(public wallet: Wallet | null) {}
@@ -154,6 +156,12 @@ class FakeWagerProcessingUnitOfWork
     entry: WalletLedgerEntry,
   ): Promise<void> {
     this.ledgerEntries.push(entry);
+  }
+
+  async insertOutboxMessage(
+    message: OutboxMessageInput,
+  ): Promise<void> {
+    this.outboxMessages.push(message);
   }
 }
 

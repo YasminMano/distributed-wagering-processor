@@ -44,3 +44,13 @@ aws --endpoint-url="$ENDPOINT" sqs create-queue \
   --region "$REGION"
 
 echo "SQS queues ready."
+
+
+EVENT_QUEUE_NAME="wager-events.fifo"
+
+aws --endpoint-url="$ENDPOINT" sqs create-queue \
+  --queue-name "$EVENT_QUEUE_NAME" \
+  --attributes '{"FifoQueue":"true","ContentBasedDeduplication":"true"}' \
+  --region "$REGION"
+
+echo "Event queue ready."

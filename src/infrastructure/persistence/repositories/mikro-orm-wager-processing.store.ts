@@ -7,6 +7,7 @@ import { EntityManager } from '@mikro-orm/postgresql';
 import {
   InboxClaimResult,
   InboxMessageInput,
+  OutboxMessageInput,
   WagerProcessingStore,
   WagerProcessingUnitOfWork,
 } from '../../../application/ports/wager-processing.store';
@@ -18,6 +19,7 @@ import {
   WagerTransactionStatus,
 } from '../../../domain/entities/wager-transaction';
 import { InboxMessagePersistence } from '../entities/inbox-message.persistence';
+import { OutboxMessagePersistence } from '../entities/outbox-message.persistence';
 import { WagerTransactionPersistence } from '../entities/wager-transaction.persistence';
 import { WalletLedgerEntryPersistence } from '../entities/wallet-ledger-entry.persistence';
 import { WalletPersistence } from '../entities/wallet.persistence';
@@ -245,6 +247,21 @@ class MikroOrmWagerProcessingUnitOfWork
       WalletLedgerEntryPersistence,
       WalletLedgerEntryMapper.toPersistence(entry),
     );
+  }
+
+  async insertOutboxMessage(
+    message: OutboxMessageInput,
+  ): Promise<void> {
+    await this.em.insert(OutboxMessagePersistence, {
+      id: message.id,
+      aggregateId: message.aggregateId,
+      eventType: message.eventType,
+      payload: message.payload,
+      occurredAt: message.occurredAt,
+      attempts: 0,
+      nextAttemptAt: null,
+      publishedAt: null,
+    });
   }
 }
 
