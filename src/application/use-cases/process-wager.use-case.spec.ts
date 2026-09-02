@@ -71,6 +71,22 @@ class FakeWagerProcessingUnitOfWork
     );
   }
 
+  async findProcessedReversalByReferenceTransactionId(
+    referenceTransactionId: string,
+    kind: WagerTransactionKind,
+  ): Promise<WagerTransaction | null> {
+    return (
+      this.transactions.find(
+        (transaction) =>
+          transaction.referenceTransactionId ===
+            referenceTransactionId &&
+          transaction.kind === kind &&
+          transaction.status ===
+            WagerTransactionStatus.Processed,
+      ) ?? null
+    );
+  }
+
   async updateWallet(wallet: Wallet): Promise<void> {
     this.wallet = wallet;
     this.updateWalletCalls += 1;
@@ -324,5 +340,419 @@ describe('ProcessWagerUseCase', () => {
       currency: 'BRL',
     });
     expect(unitOfWork.ledgerEntries).toHaveLength(0);
+  });
+
+  test('processes a REFUND of a processed BET by crediting the wallet', async () => {
+    const bet = await useCase.execute(
+      input({
+        idempotencyKey: 'bet-idem',
+        externalTransactionId: 'bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-refund',
+      }),
+    );
+
+    expect(bet.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '20.00',
+      currency: 'BRL',
+    });
+
+    const refund = await useCase.execute(
+      input({
+        idempotencyKey: 'refund-idem',
+        externalTransactionId: 'refund-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '80.00',
+        roundId: 'round-refund',
+        referenceExternalTransactionId: 'bet-external',
+      }),
+    );
+
+    expect(refund.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    expect(refund.transaction.referenceTransactionId).toBe(
+      bet.transaction.id,
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+
+    expect(unitOfWork.wallet?.version).toBe(3);
+
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+    expect(unitOfWork.ledgerEntries[1].direction).toBe(
+      LedgerDirection.Credit,
+    );
+  });
+
+  test('processes a ROLLBACK of a processed BET by crediting the wallet', async () => {
+    const bet = await useCase.execute(
+      input({
+        idempotencyKey: 'rollback-bet-idem',
+        externalTransactionId: 'rollback-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-rollback-bet',
+      }),
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '20.00',
+      currency: 'BRL',
+    });
+
+    const rollback = await useCase.execute(
+      input({
+        idempotencyKey: 'rollback-idem',
+        externalTransactionId: 'rollback-external',
+        kind: WagerTransactionKind.Rollback,
+        amount: '80.00',
+        roundId: 'round-rollback-bet',
+        referenceExternalTransactionId:
+          'rollback-bet-external',
+      }),
+    );
+
+    expect(rollback.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    expect(rollback.transaction.referenceTransactionId).toBe(
+      bet.transaction.id,
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+    expect(unitOfWork.ledgerEntries[1].direction).toBe(
+      LedgerDirection.Credit,
+    );
+  });
+
+  test('processes a ROLLBACK of a processed WIN by debiting the wallet', async () => {
+    const win = await useCase.execute(
+      input({
+        idempotencyKey: 'win-idem',
+        externalTransactionId: 'win-external',
+        kind: WagerTransactionKind.Win,
+        amount: '25.00',
+        roundId: 'round-rollback-win',
+      }),
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '125.00',
+      currency: 'BRL',
+    });
+
+    const rollback = await useCase.execute(
+      input({
+        idempotencyKey: 'win-rollback-idem',
+        externalTransactionId: 'win-rollback-external',
+        kind: WagerTransactionKind.Rollback,
+        amount: '25.00',
+        roundId: 'round-rollback-win',
+        referenceExternalTransactionId: 'win-external',
+      }),
+    );
+
+    expect(rollback.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    expect(rollback.transaction.referenceTransactionId).toBe(
+      win.transaction.id,
+    );
+
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+    expect(unitOfWork.ledgerEntries[1].direction).toBe(
+      LedgerDirection.Debit,
+    );
+  });
+
+  test('rejects a second REFUND of the same reference', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'refund-bet-idem',
+        externalTransactionId: 'refund-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-second-refund',
+      }),
+    );
+
+    await useCase.execute(
+      input({
+        idempotencyKey: 'first-refund-idem',
+        externalTransactionId: 'first-refund-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '80.00',
+        roundId: 'round-second-refund',
+        referenceExternalTransactionId: 'refund-bet-external',
+      }),
+    );
+
+    const secondRefund = await useCase.execute(
+      input({
+        idempotencyKey: 'second-refund-idem',
+        externalTransactionId: 'second-refund-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '80.00',
+        roundId: 'round-second-refund',
+        referenceExternalTransactionId: 'refund-bet-external',
+      }),
+    );
+
+    expect(secondRefund.transaction.status).toBe(
+      WagerTransactionStatus.Rejected,
+    );
+    expect(secondRefund.transaction.failureCode).toBe(
+      WagerFailureCode.AlreadyReversed,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(3);
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+  });
+
+  test('rejects a second ROLLBACK of the same reference', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'rollback-bet-idem',
+        externalTransactionId: 'rollback-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-second-rollback',
+      }),
+    );
+
+    await useCase.execute(
+      input({
+        idempotencyKey: 'first-rollback-idem',
+        externalTransactionId: 'first-rollback-external',
+        kind: WagerTransactionKind.Rollback,
+        amount: '80.00',
+        roundId: 'round-second-rollback',
+        referenceExternalTransactionId: 'rollback-bet-external',
+      }),
+    );
+
+    const secondRollback = await useCase.execute(
+      input({
+        idempotencyKey: 'second-rollback-idem',
+        externalTransactionId: 'second-rollback-external',
+        kind: WagerTransactionKind.Rollback,
+        amount: '80.00',
+        roundId: 'round-second-rollback',
+        referenceExternalTransactionId: 'rollback-bet-external',
+      }),
+    );
+
+    expect(secondRollback.transaction.status).toBe(
+      WagerTransactionStatus.Rejected,
+    );
+    expect(secondRollback.transaction.failureCode).toBe(
+      WagerFailureCode.AlreadyReversed,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(3);
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+  });
+
+  test('rejects a ROLLBACK of a WIN when the wallet no longer has sufficient funds', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'rollback-win-idem',
+        externalTransactionId: 'rollback-win-external',
+        kind: WagerTransactionKind.Win,
+        amount: '80.00',
+        roundId: 'round-rollback-insufficient',
+      }),
+    );
+
+    await useCase.execute(
+      input({
+        idempotencyKey: 'later-bet-idem',
+        externalTransactionId: 'later-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '150.00',
+        roundId: 'round-later-bet',
+      }),
+    );
+
+    const rollback = await useCase.execute(
+      input({
+        idempotencyKey: 'insufficient-rollback-idem',
+        externalTransactionId: 'insufficient-rollback-external',
+        kind: WagerTransactionKind.Rollback,
+        amount: '80.00',
+        roundId: 'round-rollback-insufficient',
+        referenceExternalTransactionId: 'rollback-win-external',
+      }),
+    );
+
+    expect(rollback.transaction.status).toBe(
+      WagerTransactionStatus.Rejected,
+    );
+    expect(rollback.transaction.failureCode).toBe(
+      WagerFailureCode.ReversalInsufficientFunds,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '30.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(3);
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
+  });
+
+  test('keeps a reversal pending when its reference is missing', async () => {
+    const refund = await useCase.execute(
+      input({
+        idempotencyKey: 'missing-reference-idem',
+        externalTransactionId: 'missing-reference-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '80.00',
+        referenceExternalTransactionId: 'absent-external',
+      }),
+    );
+
+    expect(refund.transaction.status).toBe(
+      WagerTransactionStatus.PendingReference,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(1);
+    expect(unitOfWork.updateWalletCalls).toBe(0);
+    expect(unitOfWork.ledgerEntries).toHaveLength(0);
+  });
+
+  test('rejects a REFUND that references a WIN', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'reference-win-idem',
+        externalTransactionId: 'reference-win-external',
+        kind: WagerTransactionKind.Win,
+        amount: '25.00',
+        roundId: 'round-invalid-refund',
+      }),
+    );
+
+    const refund = await useCase.execute(
+      input({
+        idempotencyKey: 'invalid-refund-idem',
+        externalTransactionId: 'invalid-refund-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '25.00',
+        roundId: 'round-invalid-refund',
+        referenceExternalTransactionId: 'reference-win-external',
+      }),
+    );
+
+    expect(refund.transaction.status).toBe(
+      WagerTransactionStatus.Rejected,
+    );
+    expect(refund.transaction.failureCode).toBe(
+      WagerFailureCode.InvalidReferenceKind,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '125.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(2);
+    expect(unitOfWork.ledgerEntries).toHaveLength(1);
+  });
+
+  test('rejects a reversal when its reference scope does not match', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'mismatch-bet-idem',
+        externalTransactionId: 'mismatch-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-reference',
+      }),
+    );
+
+    const refund = await useCase.execute(
+      input({
+        idempotencyKey: 'mismatch-refund-idem',
+        externalTransactionId: 'mismatch-refund-external',
+        kind: WagerTransactionKind.Refund,
+        amount: '80.00',
+        roundId: 'round-different',
+        referenceExternalTransactionId: 'mismatch-bet-external',
+      }),
+    );
+
+    expect(refund.transaction.status).toBe(
+      WagerTransactionStatus.Rejected,
+    );
+    expect(refund.transaction.failureCode).toBe(
+      WagerFailureCode.ReferenceMismatch,
+    );
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '20.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(2);
+    expect(unitOfWork.ledgerEntries).toHaveLength(1);
+  });
+
+  test('replays an identical reversal without applying its financial effect twice', async () => {
+    await useCase.execute(
+      input({
+        idempotencyKey: 'replay-bet-idem',
+        externalTransactionId: 'replay-bet-external',
+        kind: WagerTransactionKind.Bet,
+        amount: '80.00',
+        roundId: 'round-replay-refund',
+      }),
+    );
+
+    const refundInput = input({
+      idempotencyKey: 'replay-refund-idem',
+      externalTransactionId: 'replay-refund-external',
+      kind: WagerTransactionKind.Refund,
+      amount: '80.00',
+      roundId: 'round-replay-refund',
+      referenceExternalTransactionId: 'replay-bet-external',
+    });
+
+    const first = await useCase.execute(refundInput);
+    const replay = await useCase.execute(refundInput);
+
+    expect(first.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.transaction.id).toBe(first.transaction.id);
+    expect(unitOfWork.wallet?.balance.toJSON()).toEqual({
+      amount: '100.00',
+      currency: 'BRL',
+    });
+    expect(unitOfWork.wallet?.version).toBe(3);
+    expect(unitOfWork.ledgerEntries).toHaveLength(2);
   });
 });

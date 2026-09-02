@@ -1,6 +1,6 @@
 import { Wallet } from '../../domain/entities/wallet';
 import { WalletLedgerEntry } from '../../domain/entities/wallet-ledger-entry';
-import { WagerTransaction } from '../../domain/entities/wager-transaction';
+import { WagerTransaction, WagerTransactionKind } from '../../domain/entities/wager-transaction';
 
 export const WAGER_PROCESSING_STORE = Symbol(
   'WAGER_PROCESSING_STORE',
@@ -16,6 +16,11 @@ export interface WagerProcessingUnitOfWork {
   findTransactionByProviderAndExternalId(
     providerId: string,
     externalTransactionId: string,
+  ): Promise<WagerTransaction | null>;
+
+  findProcessedReversalByReferenceTransactionId(
+    referenceTransactionId: string,
+    kind: WagerTransactionKind,
   ): Promise<WagerTransaction | null>;
 
   updateWallet(wallet: Wallet): Promise<void>;

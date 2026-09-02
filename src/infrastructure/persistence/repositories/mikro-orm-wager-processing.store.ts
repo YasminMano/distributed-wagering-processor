@@ -8,7 +8,11 @@ import {
 } from '../../../application/ports/wager-processing.store';
 import { Wallet } from '../../../domain/entities/wallet';
 import { WalletLedgerEntry } from '../../../domain/entities/wallet-ledger-entry';
-import { WagerTransaction } from '../../../domain/entities/wager-transaction';
+import {
+  WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from '../../../domain/entities/wager-transaction';
 import { WagerTransactionPersistence } from '../entities/wager-transaction.persistence';
 import { WalletLedgerEntryPersistence } from '../entities/wallet-ledger-entry.persistence';
 import { WalletPersistence } from '../entities/wallet.persistence';
@@ -59,6 +63,24 @@ class MikroOrmWagerProcessingUnitOfWork
       {
         providerId,
         externalTransactionId,
+      },
+    );
+
+    return entity
+      ? WagerTransactionMapper.toDomain(entity)
+      : null;
+  }
+
+  async findProcessedReversalByReferenceTransactionId(
+    referenceTransactionId: string,
+    kind: WagerTransactionKind,
+  ): Promise<WagerTransaction | null> {
+    const entity = await this.em.findOne(
+      WagerTransactionPersistence,
+      {
+        referenceTransaction: referenceTransactionId,
+        kind,
+        status: WagerTransactionStatus.Processed,
       },
     );
 

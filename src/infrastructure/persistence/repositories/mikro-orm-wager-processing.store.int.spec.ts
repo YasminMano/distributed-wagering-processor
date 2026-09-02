@@ -177,6 +177,151 @@ describe('MikroOrmWagerProcessingStore integration', () => {
     expect(debitEntries[0].balanceBefore).toBe('100.00');
     expect(debitEntries[0].balanceAfter).toBe('20.00');
   });
+
+  test('serializes concurrent REFUNDs for the same BET', async () => {
+    const createWalletUseCase = new CreateWalletUseCase(
+      new MikroOrmWalletCreationStore(orm.em.fork()),
+    );
+
+    const playerId = randomUUID();
+    const wallet = await createWalletUseCase.execute({
+      playerId,
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const providerId = 'provider-refund-concurrency';
+    const roundId = randomUUID();
+    const betExternalTransactionId = randomUUID();
+
+    const betProcessor = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    const bet = await betProcessor.execute({
+      idempotencyKey: randomUUID(),
+      providerId,
+      externalTransactionId: betExternalTransactionId,
+      walletId: wallet.id,
+      playerId,
+      roundId,
+      gameId: 'game-refund-concurrency',
+      kind: WagerTransactionKind.Bet,
+      amount: '80.00',
+      currency: 'BRL',
+    });
+
+    expect(bet.transaction.status).toBe(
+      WagerTransactionStatus.Processed,
+    );
+
+    const refundInput = {
+      providerId,
+      walletId: wallet.id,
+      playerId,
+      roundId,
+      gameId: 'game-refund-concurrency',
+      kind: WagerTransactionKind.Refund,
+      amount: '80.00',
+      currency: 'BRL',
+      referenceExternalTransactionId: betExternalTransactionId,
+    };
+
+    const processorA = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+    const processorB = new ProcessWagerUseCase(
+      new MikroOrmWagerProcessingStore(orm.em.fork()),
+    );
+
+    const [resultA, resultB] = await Promise.all([
+      processorA.execute({
+        ...refundInput,
+        idempotencyKey: randomUUID(),
+        externalTransactionId: randomUUID(),
+      }),
+      processorB.execute({
+        ...refundInput,
+        idempotencyKey: randomUUID(),
+        externalTransactionId: randomUUID(),
+      }),
+    ]);
+
+    const results = [resultA, resultB];
+    const processed = results.filter(
+      (result) =>
+        result.transaction.status ===
+        WagerTransactionStatus.Processed,
+    );
+    const rejected = results.filter(
+      (result) =>
+        result.transaction.status ===
+        WagerTransactionStatus.Rejected,
+    );
+
+    expect(processed).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].transaction.failureCode).toBe(
+      WagerFailureCode.AlreadyReversed,
+    );
+
+    const verificationEm = orm.em.fork();
+    const persistedWallet = await verificationEm.findOne(
+      WalletPersistence,
+      { id: wallet.id },
+    );
+    const refundTransactions = await verificationEm.find(
+      WagerTransactionPersistence,
+      {
+        wallet: wallet.id,
+        kind: WagerTransactionKind.Refund,
+      },
+    );
+    const refundLedgerEntries = await verificationEm.find(
+      WalletLedgerEntryPersistence,
+      {
+        wallet: wallet.id,
+        transaction: processed[0].transaction.id,
+      },
+    );
+    const rejectedRefundLedgerEntry =
+      await verificationEm.findOne(
+        WalletLedgerEntryPersistence,
+        {
+          wallet: wallet.id,
+          transaction: rejected[0].transaction.id,
+        },
+      );
+
+    expect(persistedWallet?.balance).toBe('100.00');
+    expect(persistedWallet?.version).toBe(3);
+    expect(refundTransactions).toHaveLength(2);
+    expect(
+      refundTransactions.filter(
+        (transaction) =>
+          transaction.status ===
+          WagerTransactionStatus.Processed,
+      ),
+    ).toHaveLength(1);
+    expect(
+      refundTransactions.filter(
+        (transaction) =>
+          transaction.status ===
+          WagerTransactionStatus.Rejected &&
+          transaction.failureCode ===
+            WagerFailureCode.AlreadyReversed,
+      ),
+    ).toHaveLength(1);
+    expect(refundLedgerEntries).toHaveLength(1);
+    expect(rejectedRefundLedgerEntry).toBeNull();
+    expect(refundLedgerEntries[0].amount).toBe('80.00');
+    expect(refundLedgerEntries[0].direction).toBe('CREDIT');
+    expect(refundLedgerEntries[0].balanceBefore).toBe('20.00');
+    expect(refundLedgerEntries[0].balanceAfter).toBe('100.00');
+  });
+
   test('replays a committed BET without applying the financial effect twice', async () => {
     const createWalletUseCase = new CreateWalletUseCase(
       new MikroOrmWalletCreationStore(orm.em.fork()),

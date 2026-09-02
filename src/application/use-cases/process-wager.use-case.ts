@@ -11,6 +11,7 @@ import {
 import {
   WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from '../../domain/entities/wager-transaction';
 import { Money } from '../../domain/value-objects/money';
 
@@ -18,6 +19,11 @@ export const WagerFailureCode = {
   InsufficientFunds: 'INSUFFICIENT_FUNDS',
   PlayerMismatch: 'PLAYER_MISMATCH',
   CurrencyMismatch: 'CURRENCY_MISMATCH',
+  ReferenceMismatch: 'REFERENCE_MISMATCH',
+  InvalidReferenceKind: 'INVALID_REFERENCE_KIND',
+  ReferenceNotProcessed: 'REFERENCE_NOT_PROCESSED',
+  AlreadyReversed: 'ALREADY_REVERSED',
+  ReversalInsufficientFunds: 'REVERSAL_INSUFFICIENT_FUNDS',
 } as const;
 
 export class IdempotencyConflictError extends Error {
@@ -52,6 +58,7 @@ export interface ProcessWagerInput {
   kind: WagerTransactionKind;
   amount: string;
   currency: string;
+  referenceExternalTransactionId?: string;
 }
 
 export interface ProcessWagerResult {
@@ -144,6 +151,8 @@ export class ProcessWagerUseCase {
         gameId: input.gameId,
         kind: input.kind,
         money,
+        referenceExternalTransactionId:
+          input.referenceExternalTransactionId,
         createdAt: now,
       });
 
@@ -171,6 +180,19 @@ export class ProcessWagerUseCase {
           transaction,
           replayed: false,
         };
+      }
+
+      if (
+        input.kind === WagerTransactionKind.Refund ||
+        input.kind === WagerTransactionKind.Rollback
+      ) {
+        return this.processReversal(
+          unitOfWork,
+          wallet,
+          transaction,
+          money,
+          now,
+        );
       }
 
       if (
@@ -240,6 +262,206 @@ export class ProcessWagerUseCase {
     });
   }
 
+  private async processReversal(
+    unitOfWork: WagerProcessingUnitOfWork,
+    wallet: Parameters<
+      WagerProcessingUnitOfWork['updateWallet']
+    >[0],
+    transaction: WagerTransaction,
+    money: Money,
+    now: Date,
+  ): Promise<ProcessWagerResult> {
+    const referenceExternalTransactionId =
+      transaction.referenceExternalTransactionId;
+
+    if (!referenceExternalTransactionId) {
+      throw new Error(
+        `${transaction.kind} requires referenceExternalTransactionId`,
+      );
+    }
+
+    const reference =
+      await unitOfWork.findTransactionByProviderAndExternalId(
+        transaction.providerId,
+        referenceExternalTransactionId,
+      );
+
+    /*
+    * A operação dependente chegou antes da transação
+    * referenciada. Ela precisa permanecer auditável para
+    * um worker tentar novamente posteriormente.
+    */
+
+    if (!reference) {
+      transaction.markPendingReference();
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (
+      reference.providerId !== transaction.providerId ||
+      reference.playerId !== transaction.playerId ||
+      reference.walletId !== transaction.walletId ||
+      reference.roundId !== transaction.roundId ||
+      reference.money.currency !== money.currency ||
+      !reference.money.equals(money)
+    ) {
+      transaction.reject(
+        WagerFailureCode.ReferenceMismatch,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (!this.isAllowedReference(transaction, reference)) {
+      transaction.reject(
+        WagerFailureCode.InvalidReferenceKind,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    const previousReversal =
+      await unitOfWork.findProcessedReversalByReferenceTransactionId(
+        reference.id,
+        transaction.kind,
+      );
+
+    if (previousReversal) {
+      transaction.reject(
+        WagerFailureCode.AlreadyReversed,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (
+      reference.status === WagerTransactionStatus.Pending ||
+      reference.status ===
+        WagerTransactionStatus.PendingReference
+    ) {
+      transaction.markPendingReference();
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    if (
+      reference.status !==
+      WagerTransactionStatus.Processed
+    ) {
+      transaction.reject(
+        WagerFailureCode.ReferenceNotProcessed,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    const direction =
+      transaction.ledgerDirectionFor(reference);
+
+    if (
+      direction === LedgerDirection.Debit &&
+      wallet.balance.isLessThan(money)
+    ) {
+      transaction.reject(
+        WagerFailureCode.ReversalInsufficientFunds,
+      );
+
+      await unitOfWork.insertTransaction(transaction);
+
+      return {
+        transaction,
+        replayed: false,
+      };
+    }
+
+    const balanceBefore = wallet.balance;
+
+    if (direction === LedgerDirection.Debit) {
+      wallet.debit(money);
+    } else {
+      wallet.credit(money);
+    }
+
+    transaction.markProcessed(reference.id, now);
+
+    const ledgerEntry = WalletLedgerEntry.create({
+      id: randomUUID(),
+      walletId: wallet.id,
+      transactionId: transaction.id,
+      direction,
+      money,
+      balanceBefore,
+      balanceAfter: wallet.balance,
+      createdAt: now,
+    });
+
+    await this.persistFinancialMovement(
+      unitOfWork,
+      wallet,
+      transaction,
+      ledgerEntry,
+    );
+
+    return {
+      transaction,
+      replayed: false,
+    };
+  }
+
+  private isAllowedReference(
+    transaction: WagerTransaction,
+    reference: WagerTransaction,
+  ): boolean {
+    if (
+      transaction.kind === WagerTransactionKind.Refund
+    ) {
+      return reference.kind === WagerTransactionKind.Bet;
+    }
+
+    if (
+      transaction.kind === WagerTransactionKind.Rollback
+    ) {
+      return (
+        reference.kind === WagerTransactionKind.Bet ||
+        reference.kind === WagerTransactionKind.Win ||
+        reference.kind === WagerTransactionKind.Refund
+      );
+    }
+
+    return false;
+  }
+
   private async persistFinancialMovement(
     unitOfWork: WagerProcessingUnitOfWork,
     wallet: Parameters<
@@ -279,6 +501,7 @@ export class ProcessWagerUseCase {
       input.roundId,
       input.gameId,
       input.kind,
+      input.referenceExternalTransactionId ?? null,
       money.toJSON().amount,
       money.currency,
     ]);
@@ -294,10 +517,12 @@ export class ProcessWagerUseCase {
     if (
       kind !== WagerTransactionKind.Bet &&
       kind !== WagerTransactionKind.Win &&
-      kind !== WagerTransactionKind.Loss
+      kind !== WagerTransactionKind.Loss &&
+      kind !== WagerTransactionKind.Refund &&
+      kind !== WagerTransactionKind.Rollback
     ) {
       throw new Error(
-        `${kind} is not supported by this processing flow yet`,
+        `${kind} is not supported by this processing flow`,
       );
     }
   }
