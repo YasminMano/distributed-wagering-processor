@@ -478,6 +478,23 @@
           "enumItems": [],
           "mappedType": "datetime"
         },
+        "observed_balance": {
+          "name": "observed_balance",
+          "type": "numeric(38,2)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": 38,
+          "scale": 2,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "decimal"
+        },
         "payload_hash": {
           "name": "payload_hash",
           "type": "varchar(64)",
@@ -756,6 +773,12 @@
           "expression": "\"kind\" in ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK')",
           "definition": "check (\"kind\" in ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'))",
           "columnName": "kind"
+        },
+        {
+          "name": "wager_transactions_observed_balance_non_negative",
+          "expression": "(observed_balance IS NULL) OR (observed_balance >= 0)",
+          "definition": "CHECK (((observed_balance IS NULL) OR (observed_balance >= (0)::numeric)))",
+          "columnName": "observed_balance"
         },
         {
           "name": "wager_transactions_processed_at_required",

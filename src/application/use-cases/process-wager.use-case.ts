@@ -306,7 +306,7 @@ export class ProcessWagerUseCase {
     }
 
     if (input.kind === WagerTransactionKind.Loss) {
-      transaction.markProcessed(undefined, now);
+      transaction.markProcessed(undefined, now, wallet.balance);
 
       await unitOfWork.insertTransaction(transaction);
       await this.enqueueTransactionStatusEvent(
@@ -334,7 +334,7 @@ export class ProcessWagerUseCase {
       wallet.credit(money);
     }
 
-    transaction.markProcessed(undefined, now);
+    transaction.markProcessed(undefined, now, wallet.balance);
 
     const ledgerEntry = WalletLedgerEntry.create({
       id: randomUUID(),
@@ -565,7 +565,7 @@ export class ProcessWagerUseCase {
       wallet.credit(money);
     }
 
-    transaction.markProcessed(reference.id, now);
+    transaction.markProcessed(reference.id, now, wallet.balance);
 
     const ledgerEntry = WalletLedgerEntry.create({
       id: randomUUID(),

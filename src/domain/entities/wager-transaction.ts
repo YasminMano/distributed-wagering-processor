@@ -54,6 +54,7 @@ export interface WagerTransactionState
   referenceTransactionId?: string;
   failureCode?: FailureCode;
   processedAt?: Date;
+  observedBalance?: Money;
   retryAttempts: number;
   nextRetryAt?: Date;
 }
@@ -64,6 +65,7 @@ export class WagerTransaction {
   private _referenceTransactionId?: string;
   private _failureCode?: FailureCode;
   private _processedAt?: Date;
+  private _observedBalance?: Money;
   private _retryAttempts: number;
   private _nextRetryAt?: Date;
 
@@ -87,6 +89,7 @@ export class WagerTransaction {
     processedAt?: Date,
     retryAttempts = 0,
     nextRetryAt?: Date,
+    observedBalance?: Money,
   ) {
     this.creationTime = new Date(createdAt.getTime());
     this._status = status;
@@ -95,6 +98,7 @@ export class WagerTransaction {
     this._processedAt = processedAt
       ? new Date(processedAt.getTime())
       : undefined;
+    this._observedBalance = observedBalance;
     this._retryAttempts = retryAttempts;
     this._nextRetryAt = nextRetryAt
       ? new Date(nextRetryAt.getTime())
@@ -162,6 +166,7 @@ export class WagerTransaction {
       state.processedAt,
       state.retryAttempts,
       state.nextRetryAt,
+      state.observedBalance,
     );
   }
 
@@ -187,6 +192,10 @@ export class WagerTransaction {
       : undefined;
   }
 
+  get observedBalance(): Money | undefined {
+    return this._observedBalance;
+  }
+
   get retryAttempts(): number {
     return this._retryAttempts;
   }
@@ -200,6 +209,7 @@ export class WagerTransaction {
   markProcessed(
     referenceTransactionId: string | undefined,
     at: Date,
+    observedBalance?: Money,
   ): void {
     this.assertNotTerminal('mark as processed');
 
@@ -213,6 +223,7 @@ export class WagerTransaction {
     this._referenceTransactionId = referenceTransactionId;
     this._failureCode = undefined;
     this._processedAt = new Date(at.getTime());
+    this._observedBalance = observedBalance;
     this.clearRetrySchedule();
   }
 

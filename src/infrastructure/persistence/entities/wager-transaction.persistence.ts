@@ -58,6 +58,11 @@ export const WagerTransactionPersistence = defineEntity({
       .columnType('timestamptz')
       .nullable(),
 
+    observedBalance: p
+      .decimal('string')
+      .columnType('numeric(38,2)')
+      .nullable(),
+
     retryAttempts: p.integer().default(0),
 
     nextRetryAt: p

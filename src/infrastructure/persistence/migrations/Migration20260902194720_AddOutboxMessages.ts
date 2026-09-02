@@ -29,8 +29,6 @@ export class Migration20260902194720_AddOutboxMessages extends Migration {
     this.addSql(`alter table "wager_transactions" add constraint "wager_transactions_resolved_reference_required" check ((status <> 'PROCESSED'::text) OR (kind <> ALL (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])) OR (reference_transaction_id IS NOT NULL));`);
     this.addSql(`alter table "wager_transactions" add constraint "wager_transactions_retry_attempts_valid" check ((retry_attempts >= 0) AND (retry_attempts <= 5));`);
 
-    this.addSql(`create or replace function "wallet_ledger_entries_wallet_ledger_entries_immutable_fn"() returns trigger as $$ begin ; end; $$ language plpgsql;`);
-    this.addSql(`create trigger "wallet_ledger_entries_immutable" BEFORE DELETE OR UPDATE on "wallet_ledger_entries" for each STATEMENT execute function "wallet_ledger_entries_wallet_ledger_entries_immutable_fn"();`);
   }
 
 }

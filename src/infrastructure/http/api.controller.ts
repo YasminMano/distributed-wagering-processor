@@ -440,10 +440,18 @@ export class ApiController {
       }
 
       return {
-        ...this.mapDomainTransaction(
-          result.transaction,
-        ),
+        transactionId: result.transaction.id,
+        status: result.transaction.status,
+        balance:
+          result.transaction.observedBalance?.toJSON() ??
+          null,
         idempotentReplay: result.replayed,
+        ...(result.transaction.failureCode
+          ? {
+              failureCode:
+                result.transaction.failureCode,
+            }
+          : {}),
       };
     } catch (error) {
       if (

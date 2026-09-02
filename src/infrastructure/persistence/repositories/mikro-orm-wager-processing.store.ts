@@ -234,6 +234,8 @@ class MikroOrmWagerProcessingUnitOfWork
         status: transaction.status,
         failureCode: transaction.failureCode ?? null,
         processedAt: transaction.processedAt ?? null,
+        observedBalance:
+          transaction.observedBalance?.toJSON().amount ?? null,
         retryAttempts: transaction.retryAttempts,
         nextRetryAt: transaction.nextRetryAt ?? null,
       },
