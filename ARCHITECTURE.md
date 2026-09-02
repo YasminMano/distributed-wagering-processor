@@ -1,179 +1,63 @@
 # Architecture
 
-## 1. Overview
+## 1. Objetivo
 
-This project implements a distributed wagering transaction processor.
+Esta solução foi desenhada para manter correção financeira mesmo quando:
 
-The main architectural goal is to preserve financial correctness even when:
+- a mesma operação chega mais de uma vez;
+- operações chegam fora de ordem;
+- múltiplas instâncias processam a mesma wallet;
+- o processo morre antes ou depois do commit;
+- SQS redeliver uma mensagem;
+- publishers de Outbox executam simultaneamente.
 
-- messages are delivered more than once;
-- messages arrive out of order;
-- multiple application instances process the same wallet concurrently;
-- PostgreSQL or SQS are temporarily unavailable;
-- a process crashes before or after committing a transaction.
-
-The system must never duplicate credits or debits, lose confirmed events or allow a wallet balance to become negative.
-
----
-
-## 2. Architectural Priorities
-
-The project prioritizes:
-
-1. Financial correctness
-2. Concurrency safety
-3. Persistent idempotency
-4. Ledger consistency
-5. Atomic event publication
-6. Failure recovery
-7. Clear separation of responsibilities
-
-The architecture favors correctness and auditability over premature optimization.
+A principal decisão arquitetural é tratar **PostgreSQL como a autoridade das invariantes**. FIFO ajuda na ordenação/deduplicação do transporte, mas não é usado como garantia final de consistência.
 
 ---
 
-## 3. Layers
+## 2. Organização em camadas
 
-The application is divided into four main boundaries.
+A aplicação é separada em:
 
-### 3.1 Domain
+### Domain
 
-Contains business rules and invariants.
+Contém os conceitos financeiros sem dependência de NestJS/MikroORM:
 
-Examples:
+- `Money`
+- `Wallet`
+- `WagerTransaction`
+- `WalletLedgerEntry`
 
-- Money
-- Wallet
-- WagerTransaction
-- WalletLedgerEntry
-- InboxMessage
-- OutboxMessage
+As entidades encapsulam transições e invariantes. Persistência usa `rehydrate` para reconstruir estado já validado sem executar novamente regras de criação/transição.
 
-The domain layer must not depend on:
+### Application
 
-- NestJS
-- PostgreSQL
-- AWS SQS
-- MikroORM decorators
-- HTTP-specific concepts
+Contém os casos de uso e portas:
 
-This keeps financial rules independent from infrastructure.
+- criação de wallet;
+- processamento de wager;
+- retry de referências pendentes;
+- interfaces de persistência/UoW.
 
-### 3.2 Application
+HTTP e SQS chamam o mesmo caso de uso de processamento, evitando duas implementações diferentes das regras financeiras.
 
-Contains use cases and orchestration.
+### Infrastructure
 
-Examples:
+Contém:
 
-- CreateWallet
-- ProcessWagerTransaction
-- ReconcileWallet
-
-HTTP requests and SQS messages must reuse the same application use cases.
-
-This prevents business rules from being duplicated across different entry points.
-
-### 3.3 Infrastructure
-
-Contains technical implementations.
-
-Examples:
-
-- PostgreSQL persistence
-- MikroORM repositories
-- transaction management
-- SQS integration
-- inbox/outbox workers
-- logging
-- metrics
-
-PostgreSQL is treated as the final authority for consistency.
-
-### 3.4 Presentation
-
-Contains external entry points.
-
-Examples:
-
-- HTTP controllers
-- request validation
-- health endpoints
-
-Controllers should remain thin and delegate business behavior to application use cases.
+- controllers HTTP;
+- MikroORM/PostgreSQL;
+- migrations;
+- consumidor SQS;
+- Inbox/Outbox;
+- workers;
+- observabilidade.
 
 ---
 
-## 4. Runtime and Framework
+## 3. Money e precisão financeira
 
-### Bun
-
-Bun 1.x is used as:
-
-- runtime;
-- package manager;
-- test runner.
-
-### TypeScript
-
-TypeScript is configured in strict mode.
-
-### NestJS
-
-NestJS is used for:
-
-- dependency injection;
-- HTTP transport;
-- application bootstrap;
-- infrastructure integration.
-
-Domain objects remain framework-independent.
-
----
-
-## 5. Persistence
-
-PostgreSQL is the primary database and the final authority for financial consistency.
-
-Important invariants must be enforced both:
-
-- in application/domain code;
-- in the database schema.
-
-Examples include:
-
-- unique wallet per player and currency;
-- non-negative wallet balance;
-- unique financial transaction identifiers;
-- immutable ledger relationships;
-- persistent idempotency guarantees.
-
-Migrations will be versioned and reversible.
-
----
-
-## 6. ORM
-
-MikroORM will be used.
-
-Reasons:
-
-- explicit Unit of Work;
-- transaction support;
-- Identity Map;
-- locking primitives;
-- good fit for aggregate-oriented domain modeling.
-
-The domain itself will not depend on MikroORM-specific types.
-
----
-
-## 7. Money
-
-Financial values must never use JavaScript `number`, `float` or `double`.
-
-Money will be represented using exact decimal arithmetic.
-
-External contracts use decimal strings with two decimal places:
+Dinheiro entra e sai dos contratos como string decimal:
 
 ```json
 {
@@ -182,224 +66,442 @@ External contracts use decimal strings with two decimal places:
 }
 ```
 
-The Money value object will be responsible for:
+O domínio usa `decimal.js`. JavaScript `number` não é utilizado para representar quantias monetárias.
 
-- exact arithmetic;
-- currency validation;
-- rejecting invalid decimal formats;
-- preventing operations between different currencies;
-- serialization to stable decimal strings.
+Propriedades importantes:
+
+- escala fixa de duas casas;
+- rejeição de formatos inválidos;
+- rejeição de operações entre moedas diferentes;
+- operações imutáveis;
+- serialização determinística.
+
+Na persistência são usadas colunas decimais exatas (`NUMERIC`), e os valores são reidratados para `Money`.
+
+Essa decisão remove erros binários típicos de IEEE-754 e atende à restrição financeira central do desafio.
 
 ---
 
-## 8. Wallet and Ledger Consistency
+## 4. Wallet, saldo e ledger
 
-Wallet stores the materialized current balance.
+`Wallet` é o aggregate root financeiro.
 
-WalletLedgerEntry stores the immutable financial history.
+Invariantes:
 
-Every balance change must generate exactly one corresponding ledger entry.
+- uma wallet por `playerId + currency`;
+- saldo não negativo;
+- versão inicia em 1;
+- versão só incrementa quando o saldo muda;
+- toda mudança de saldo gera exatamente um ledger entry;
+- operação sem movimento, como `LOSS`, não gera ledger.
 
-Operations without balance impact do not create ledger entries.
+O schema reforça invariantes que não devem depender apenas da aplicação:
 
-The central financial invariant is:
+- unicidade de wallet;
+- não-negatividade do saldo;
+- unicidade de operações;
+- integridade entre transações e ledger;
+- ledger protegido contra alteração/exclusão.
+
+O ledger é append-only. UPDATE/DELETE não fazem parte do modelo operacional e a persistência aplica proteção de imutabilidade no banco.
+
+### OPENING
+
+Wallet criada com saldo inicial maior que zero produz uma transação interna `OPENING` e um ledger `CREDIT` na mesma transação SQL.
+
+Wallet com saldo zero não cria movimento artificial.
+
+---
+
+## 5. Concorrência
+
+A unidade de concorrência é a wallet, não a aplicação inteira.
+
+A estratégia escolhida é **pessimistic row locking no PostgreSQL** durante o processamento financeiro.
+
+Conceitualmente:
 
 ```text
-wallet.balance == balance reconstructed from ledger
+BEGIN
+  localizar wallet
+  SELECT/FIND ... FOR UPDATE
+  validar idempotência/regras
+  aplicar movimento
+  persistir wallet + transaction + ledger + outbox
+COMMIT
 ```
 
-Ledger entries must never be overwritten or deleted.
+Isso evita `read → calculate → update` desprotegido.
+
+### Por que não lock global?
+
+Um lock global impediria paralelismo entre wallets independentes. Row locks permitem:
+
+- operações da mesma wallet serializadas;
+- wallets diferentes processadas em paralelo;
+- múltiplas instâncias sem memória compartilhada.
+
+A correção foi validada com:
+
+- duas BETs concorrendo pelo mesmo saldo;
+- 50 envios paralelos da mesma BET;
+- wallets diferentes;
+- três processadores independentes;
+- script com três processos Nest reais.
 
 ---
 
-## 9. Idempotency
+## 6. Idempotência persistente
 
-The system assumes at-least-once delivery.
+Há duas dimensões complementares:
 
-Therefore, duplicate requests and duplicate messages are expected behavior.
+### Idempotency key da operação
 
-Idempotency must be persistent and database-backed.
+`Idempotency-Key` é persistida com a transação.
 
-The API uses the `Idempotency-Key` header as the source of truth.
+O payload financeiro relevante é canonicalizado e associado a um hash estável. O header e metadados de transporte não definem o payload financeiro.
 
-A canonical payload hash will be stored with the transaction.
+Comportamento:
 
-Expected behavior:
+- mesma key + mesmo payload → replay;
+- mesma key + payload diferente → conflito;
+- provider/external transaction também possui proteção contra duplicidade.
 
-- same key + same payload -> return original result;
-- same key + different payload -> idempotency conflict;
-- duplicate delivery -> no duplicated financial effect.
+O replay retorna o resultado original e o **saldo observado naquele processamento**, armazenado com a transação. Portanto uma operação antiga pode ser repetida depois de movimentos posteriores sem devolver incorretamente o saldo atual.
 
-In-memory caches are not used as the consistency guarantee.
+### Inbox da mensagem SQS
 
----
+Mensagens são deduplicadas por:
 
-## 10. Concurrency
+```text
+(consumerName, messageId)
+```
 
-The unit of concurrency is the wallet.
+A Inbox é persistente, não um cache em memória.
 
-Multiple application instances may attempt to modify the same wallet simultaneously.
-
-The database must prevent lost updates and negative balances caused by race conditions.
-
-The exact locking strategy will be finalized after implementation and concurrency testing.
-
-Current direction:
-
-- transaction scoped locking per wallet;
-- no global lock;
-- wallets that are independent should remain processable in parallel.
-
-The chosen strategy and its trade-offs will be documented after the first concurrency implementation.
+Mesmo que o broker redeliver após restart, outra instância consegue identificar a mensagem já processada.
 
 ---
 
-## 11. Inbox
+## 7. Transação financeira e atomicidade
 
-SQS delivery is at-least-once.
+Para entrada SQS, os itens abaixo participam da mesma transação PostgreSQL:
 
-The inbox provides persistent message deduplication.
+```text
+Inbox
+Wallet
+WagerTransaction
+WalletLedgerEntry
+OutboxMessage
+```
 
-Messages are identified using:
+Ou todos são commitados, ou todos são revertidos.
 
-- consumer name;
-- message id.
+Isso elimina estados como:
 
-Inbox persistence participates in the same SQL transaction as the financial operation.
+- saldo alterado sem ledger;
+- Inbox marcada sem efeito financeiro;
+- transação processada sem evento persistido;
+- evento persistido antes da operação financeira.
 
-A message is acknowledged only after the SQL transaction commits successfully.
-
----
-
-## 12. Transactional Outbox
-
-Financial state and integration events must be committed atomically.
-
-The same SQL transaction will persist:
-
-- wagering transaction;
-- wallet balance change;
-- ledger entry;
-- inbox entry when applicable;
-- outbox messages.
-
-Events are not published directly before the financial commit.
-
-A separate worker publishes pending outbox messages.
-
-If the application crashes after the database commit but before publication, another worker can publish the pending event later.
-
-Consumers must tolerate duplicate event publication.
+O ACK do SQS acontece somente depois que o caso de uso terminou e o commit foi concluído.
 
 ---
 
-## 13. Out-of-Order References
+## 8. Crash depois do commit e antes do ACK
 
-REFUND and ROLLBACK may arrive before the transaction they reference.
+Cenário:
 
-In this situation, the transaction will be persisted as:
+```text
+1. mensagem recebida
+2. transação SQL commitada
+3. processo morre
+4. DeleteMessage não acontece
+5. SQS redeliver
+6. nova instância recebe a mesma mensagem
+```
+
+A segunda execução encontra a Inbox/idempotência já persistida e não reaplica o débito/crédito.
+
+Esse cenário possui teste de integração com PostgreSQL e MiniStack, incluindo falha simulada exatamente entre commit e ACK e recriação do consumer/store para representar restart.
+
+---
+
+## 9. Reversões
+
+### REFUND
+
+- exige referência;
+- referencia apenas BET processada;
+- mesmo provider, player, wallet, currency e round;
+- valor deve ser igual ao da referência;
+- uma mesma referência não pode receber dois REFUNDs processados.
+
+### ROLLBACK
+
+Pode reverter:
+
+- BET;
+- WIN;
+- REFUND.
+
+O movimento é o inverso do movimento referenciado.
+
+A restrição é **por tipo de reversão**: uma referência pode possuir um REFUND e um ROLLBACK válidos quando as regras permitirem, mas não dois do mesmo tipo.
+
+Reversão que causaria saldo negativo é rejeitada com failure code próprio e continua auditável.
+
+`gameId` não é usado como requisito de igualdade da referência; o escopo exigido é provider/player/wallet/currency/round.
+
+---
+
+## 10. Referências fora de ordem
+
+REFUND/ROLLBACK podem chegar antes da operação referenciada.
+
+Nesse caso a transação é persistida como:
 
 ```text
 PENDING_REFERENCE
 ```
 
-A scheduled worker will retry processing using backoff.
+Um worker reprocessa transações devidas.
 
-If the referenced transaction never becomes available within the configured retry/TTL policy, the operation will become REJECTED with a machine-readable failure code.
+A política implementada usa:
 
-The retry policy will be documented after implementation.
+- backoff exponencial;
+- base curta para o ambiente do desafio;
+- limite de 5 tentativas;
+- rejeição terminal com failure code estável quando a referência não aparece.
 
----
-
-## 14. Authentication
-
-Authentication is intentionally not part of the initial implementation timebox.
-
-The challenge assigns no evaluation points to authentication and explicitly allows it to be omitted when the architectural extension point is documented.
-
-The intended production approach would use an external OIDC identity provider rather than custom password authentication.
-
-An explicit authentication integration boundary will remain available in the application.
-
-Health endpoints remain unauthenticated.
+Workers concorrentes continuam seguros porque o estado é persistido e protegido no banco.
 
 ---
 
-## 15. Observability
+## 11. SQS, erros e DLQ
 
-The application will provide:
+A entrada SQS reutiliza `ProcessWagerUseCase`.
 
-- structured JSON logs;
-- correlation identifiers;
-- transaction identifiers;
-- wallet identifiers;
-- provider identifiers;
-- metrics for transaction status;
-- duplicate detection;
+O consumidor só envia `DeleteMessage` depois do commit.
+
+Categorias operacionais:
+
+- regra de negócio terminal → resultado auditável e ACK;
+- erro transitório → mensagem permanece para retry/redelivery;
+- mensagem permanentemente inválida → não é confirmada e o broker redireciona para DLQ após o limite configurado.
+
+A fila principal possui RedrivePolicy com `maxReceiveCount = 5`.
+
+No shutdown o worker para de buscar novo trabalho e espera o loop corrente encerrar. Mensagens que não chegaram ao ACK permanecem protegidas pela visibility timeout/redelivery.
+
+---
+
+## 12. Transactional Outbox
+
+Eventos nunca são publicados diretamente durante a transação financeira.
+
+Primeiro são persistidos em `outbox_messages` dentro do mesmo commit da operação.
+
+Depois um publisher assíncrono seleciona mensagens pendentes em lotes usando:
+
+```sql
+FOR UPDATE SKIP LOCKED
+```
+
+Consequências:
+
+- dois publishers podem trabalhar ao mesmo tempo;
+- uma linha não fica bloqueando publishers concorrentes;
+- processo que morre deixa a mensagem persistida para outra instância;
+- retries possuem backoff.
+
+O broker ainda é at-least-once. O envelope contém `eventId` estável e consumidores externos devem ser idempotentes.
+
+### Eventos
+
+- `WagerTransactionProcessed`
+- `WagerTransactionRejected`
+- `WalletBalanceChanged`
+- `WagerTransactionPendingReference`
+
+`WalletBalanceChanged` só é criado quando existe movimento financeiro.
+
+---
+
+## 13. Reconciliação
+
+O endpoint:
+
+```http
+POST /wallets/:walletId/reconciliation
+```
+
+reconstrói o saldo a partir do ledger no PostgreSQL e compara com `wallet.balance`.
+
+Invariante:
+
+```text
+wallet.balance == Σ CREDIT - Σ DEBIT
+```
+
+O cálculo monetário é feito em tipos numéricos exatos do PostgreSQL.
+
+A resposta inclui:
+
+- `storedBalance`;
+- `calculatedBalance`;
+- `difference`;
+- `consistent`;
+- `checkedEntries`.
+
+Divergência não é corrigida. Ela é:
+
+- retornada ao chamador;
+- registrada em log estruturado;
+- incrementada na métrica `reconciliationDivergences`.
+
+Há teste de integração comprovando o invariante após OPENING + BET + WIN.
+
+---
+
+## 14. Observabilidade
+
+### Logs
+
+Logs JSON estruturados incluem quando disponíveis:
+
+- correlationId;
+- messageId;
+- transactionId;
+- walletId;
+- providerId.
+
+O serviço evita registrar payload financeiro completo.
+
+### Métricas
+
+`GET /metrics` cobre:
+
+- transações agrupadas por status;
+- duplicatas detectadas;
 - retries;
-- DLQ messages;
+- DLQ;
 - lock conflicts;
 - outbox lag;
 - processing latency;
-- separate liveness and readiness checks.
+- divergências de reconciliação.
 
-Sensitive financial payloads must not be written completely to logs.
+Algumas métricas operacionais são obtidas diretamente do PostgreSQL/SQS, enquanto contadores de runtime são mantidos pela instância.
 
----
+### Health
 
-## 16. Testing Strategy
+```text
+GET /health/live
+GET /health/ready
+```
 
-### Unit tests
-
-Cover:
-
-- Money;
-- Wallet invariants;
-- BET;
-- WIN;
-- LOSS;
-- REFUND;
-- ROLLBACK;
-- currency conflicts;
-- idempotency conflicts.
-
-### Integration tests
-
-Use real PostgreSQL and LocalStack/MiniStack containers.
-
-Cover:
-
-- migrations;
-- database constraints;
-- wallet/ledger/inbox/outbox atomicity;
-- message redelivery;
-- retry and DLQ behavior;
-- outbox publication.
-
-### Concurrency tests
-
-Must use real parallel execution.
-
-Important scenarios include:
-
-- the same transaction submitted many times simultaneously;
-- two bets competing for the same balance;
-- different wallets processed in parallel;
-- three or more application instances;
-- process failure after commit and before acknowledgment.
+Readiness depende de PostgreSQL e SQS estarem acessíveis.
 
 ---
 
-## 17. Known Decisions Still Open
+## 15. Migrations
 
-The following decisions are intentionally not finalized yet:
+O schema é versionado por migrations MikroORM.
 
-- exact wallet locking strategy;
-- exact decimal library;
-- pending-reference retry limit and TTL;
-- outbox retry/backoff policy;
-- HTTP status mapping;
-- failure-code taxonomy;
-- metrics implementation.
+As migrations são reversíveis e contêm tanto a estrutura quanto constraints/índices necessários às invariantes.
 
-These decisions will be updated with implementation evidence and trade-offs during development.
+Durante o desenvolvimento foi validado também o fluxo de `down/up` em mudanças sensíveis, incluindo a preservação da proteção de imutabilidade do ledger.
+
+---
+
+## 16. Autenticação
+
+Não implementada por decisão de escopo.
+
+O próprio desafio não pontua autenticação, então o tempo foi concentrado nas áreas de maior risco: correção financeira, concorrência, idempotência e falhas distribuídas.
+
+Desenho de produção:
+
+```text
+Provider
+   ↓
+External IdP (OIDC)
+   ↓
+Nest AuthGuard
+   ↓
+HTTP controllers
+```
+
+Keycloak, Zitadel ou IdP equivalente poderiam ser usados. Health continuaria aberto.
+
+---
+
+## 17. Test strategy
+
+Validação final:
+
+```text
+93 tests passing
+0 failures
+467 assertions
+15 test files
+```
+
+Além da suíte Bun, `scripts/test-multi-process.sh` inicia três processos Nest reais.
+
+Casos de maior risco cobertos:
+
+- precisão de Money;
+- saldo negativo;
+- ledger balanceado;
+- idempotência persistente;
+- payload conflitante;
+- concorrência hot-wallet;
+- 50 duplicatas paralelas;
+- paralelismo entre wallets;
+- ≥ 3 processadores;
+- referências fora de ordem;
+- Inbox;
+- atomicidade;
+- crash commit-before-ACK;
+- DLQ;
+- dois publishers;
+- reconciliação final.
+
+Os testes de infraestrutura usam PostgreSQL e MiniStack reais em containers; mocks não substituem completamente a infraestrutura exigida.
+
+---
+
+## 18. Trade-offs e limitações
+
+### MiniStack
+
+É um emulador local. A semântica relevante foi testada no escopo do desafio, mas produção exigiria validação contra AWS SQS real.
+
+### Métricas
+
+Contadores de runtime são locais a cada processo. Em produção seriam exportados para OpenTelemetry/Prometheus e agregados externamente.
+
+### At-least-once
+
+Não é prometido “exactly once delivery”. A solução garante que redelivery seja financeiramente segura e usa identidades estáveis para permitir deduplicação downstream.
+
+### Pending reference polling
+
+Foi escolhida uma implementação simples baseada em worker/polling para manter o escopo controlado. O estado e os locks ficam no banco, portanto múltiplas instâncias continuam corretas.
+
+### Autenticação
+
+Omitida conscientemente e documentada como ponto de extensão.
+
+### Load test
+
+Não foi priorizado porque é diferencial opcional. A prioridade foi provar invariantes e cenários de falha obrigatórios.
+
+---
+
+## 19. Decisão central
+
+A arquitetura não tenta impedir que sistemas distribuídos entreguem mensagens novamente ou que processos falhem.
+
+Ela parte do princípio de que isso **vai acontecer** e garante que o estado financeiro continue correto quando acontecer.
