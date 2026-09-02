@@ -24,7 +24,11 @@ export const WagerFailureCode = {
   ReferenceNotProcessed: 'REFERENCE_NOT_PROCESSED',
   AlreadyReversed: 'ALREADY_REVERSED',
   ReversalInsufficientFunds: 'REVERSAL_INSUFFICIENT_FUNDS',
+  ReferenceNotFound: 'REFERENCE_NOT_FOUND',
 } as const;
+
+export const PENDING_REFERENCE_MAX_ATTEMPTS = 5;
+export const PENDING_REFERENCE_BASE_DELAY_MS = 100;
 
 export class IdempotencyConflictError extends Error {
   constructor() {
@@ -262,6 +266,43 @@ export class ProcessWagerUseCase {
     });
   }
 
+  async retryPendingReference(
+    transactionId: string,
+    now: Date,
+  ): Promise<ProcessWagerResult | null> {
+    return this.store.execute(async (unitOfWork) => {
+      const transaction =
+        await unitOfWork.lockTransactionForPendingReferenceRetry(
+          transactionId,
+        );
+
+      if (
+        !transaction ||
+        transaction.status !==
+          WagerTransactionStatus.PendingReference
+      ) {
+        return null;
+      }
+
+      const wallet = await unitOfWork.findWalletForUpdate(
+        transaction.walletId,
+      );
+
+      if (!wallet) {
+        throw new WalletNotFoundError(transaction.walletId);
+      }
+
+      return this.processReversal(
+        unitOfWork,
+        wallet,
+        transaction,
+        transaction.money,
+        now,
+        true,
+      );
+    });
+  }
+
   private async processReversal(
     unitOfWork: WagerProcessingUnitOfWork,
     wallet: Parameters<
@@ -270,6 +311,7 @@ export class ProcessWagerUseCase {
     transaction: WagerTransaction,
     money: Money,
     now: Date,
+    isRetry = false,
   ): Promise<ProcessWagerResult> {
     const referenceExternalTransactionId =
       transaction.referenceExternalTransactionId;
@@ -293,9 +335,17 @@ export class ProcessWagerUseCase {
     */
 
     if (!reference) {
-      transaction.markPendingReference();
+      this.schedulePendingReference(
+        transaction,
+        now,
+        isRetry,
+      );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(
+        unitOfWork,
+        transaction,
+        isRetry,
+      );
 
       return {
         transaction,
@@ -315,7 +365,7 @@ export class ProcessWagerUseCase {
         WagerFailureCode.ReferenceMismatch,
       );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(unitOfWork, transaction, isRetry);
 
       return {
         transaction,
@@ -328,7 +378,7 @@ export class ProcessWagerUseCase {
         WagerFailureCode.InvalidReferenceKind,
       );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(unitOfWork, transaction, isRetry);
 
       return {
         transaction,
@@ -347,7 +397,7 @@ export class ProcessWagerUseCase {
         WagerFailureCode.AlreadyReversed,
       );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(unitOfWork, transaction, isRetry);
 
       return {
         transaction,
@@ -360,9 +410,17 @@ export class ProcessWagerUseCase {
       reference.status ===
         WagerTransactionStatus.PendingReference
     ) {
-      transaction.markPendingReference();
+      this.schedulePendingReference(
+        transaction,
+        now,
+        isRetry,
+      );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(
+        unitOfWork,
+        transaction,
+        isRetry,
+      );
 
       return {
         transaction,
@@ -378,7 +436,7 @@ export class ProcessWagerUseCase {
         WagerFailureCode.ReferenceNotProcessed,
       );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(unitOfWork, transaction, isRetry);
 
       return {
         transaction,
@@ -397,7 +455,7 @@ export class ProcessWagerUseCase {
         WagerFailureCode.ReversalInsufficientFunds,
       );
 
-      await unitOfWork.insertTransaction(transaction);
+      await this.persistReversalTransaction(unitOfWork, transaction, isRetry);
 
       return {
         transaction,
@@ -431,12 +489,59 @@ export class ProcessWagerUseCase {
       wallet,
       transaction,
       ledgerEntry,
+      isRetry,
     );
 
     return {
       transaction,
       replayed: false,
     };
+  }
+
+  private schedulePendingReference(
+    transaction: WagerTransaction,
+    now: Date,
+    isRetry: boolean,
+  ): void {
+    if (!isRetry) {
+      transaction.markPendingReference(
+        this.nextRetryAt(now, 0),
+      );
+      return;
+    }
+
+    const retryAttempts = transaction.retryAttempts + 1;
+
+    if (retryAttempts >= PENDING_REFERENCE_MAX_ATTEMPTS) {
+      transaction.reject(WagerFailureCode.ReferenceNotFound);
+      return;
+    }
+
+    transaction.scheduleNextReferenceRetry(
+      retryAttempts,
+      this.nextRetryAt(now, retryAttempts),
+    );
+  }
+
+  private nextRetryAt(now: Date, retryAttempts: number): Date {
+    const delay =
+      PENDING_REFERENCE_BASE_DELAY_MS *
+      2 ** retryAttempts;
+
+    return new Date(now.getTime() + delay);
+  }
+
+  private async persistReversalTransaction(
+    unitOfWork: WagerProcessingUnitOfWork,
+    transaction: WagerTransaction,
+    isRetry: boolean,
+  ): Promise<void> {
+    if (isRetry) {
+      await unitOfWork.updateTransaction(transaction);
+      return;
+    }
+
+    await unitOfWork.insertTransaction(transaction);
   }
 
   private isAllowedReference(
@@ -469,9 +574,14 @@ export class ProcessWagerUseCase {
     >[0],
     transaction: WagerTransaction,
     ledgerEntry: WalletLedgerEntry,
+    updateExistingTransaction = false,
   ): Promise<void> {
     await unitOfWork.updateWallet(wallet);
-    await unitOfWork.insertTransaction(transaction);
+    if (updateExistingTransaction) {
+      await unitOfWork.updateTransaction(transaction);
+    } else {
+      await unitOfWork.insertTransaction(transaction);
+    }
     await unitOfWork.insertLedgerEntry(ledgerEntry);
   }
 

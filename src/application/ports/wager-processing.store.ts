@@ -23,9 +23,21 @@ export interface WagerProcessingUnitOfWork {
     kind: WagerTransactionKind,
   ): Promise<WagerTransaction | null>;
 
+  findDuePendingReferenceTransactionIds(
+    now: Date,
+  ): Promise<string[]>;
+
+  lockTransactionForPendingReferenceRetry(
+    transactionId: string,
+  ): Promise<WagerTransaction | null>;
+
   updateWallet(wallet: Wallet): Promise<void>;
 
   insertTransaction(
+    transaction: WagerTransaction,
+  ): Promise<void>;
+
+  updateTransaction(
     transaction: WagerTransaction,
   ): Promise<void>;
 

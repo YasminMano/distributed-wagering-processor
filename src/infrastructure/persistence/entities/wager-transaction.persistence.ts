@@ -57,6 +57,13 @@ export const WagerTransactionPersistence = defineEntity({
       .datetime()
       .columnType('timestamptz')
       .nullable(),
+
+    retryAttempts: p.integer().default(0),
+
+    nextRetryAt: p
+      .datetime()
+      .columnType('timestamptz')
+      .nullable(),
   },
 
   uniques: [
@@ -82,6 +89,10 @@ export const WagerTransactionPersistence = defineEntity({
     {
       name: 'wager_transactions_status_created_idx',
       properties: ['status', 'createdAt'],
+    },
+    {
+      name: 'wager_transactions_pending_reference_retry_idx',
+      properties: ['status', 'nextRetryAt'],
     },
   ],
 
@@ -123,6 +134,10 @@ export const WagerTransactionPersistence = defineEntity({
       name: 'wager_transactions_resolved_reference_required',
       expression:
         "status <> 'PROCESSED' or kind not in ('REFUND', 'ROLLBACK') or reference_transaction_id is not null",
+    },
+    {
+      name: 'wager_transactions_retry_attempts_valid',
+      expression: 'retry_attempts between 0 and 5',
     },
   ],
 });

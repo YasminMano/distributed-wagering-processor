@@ -12,12 +12,14 @@ import {
 import { MikroOrmWagerProcessingStore } from './repositories/mikro-orm-wager-processing.store';
 import { MikroOrmWalletCreationStore } from './repositories/mikro-orm-wallet-creation.store';
 import { MikroOrmWalletRepository } from './repositories/mikro-orm-wallet.repository';
+import { PendingReferenceRetryWorker } from './pending-reference-retry.worker';
 
 @Module({
   providers: [
     MikroOrmWalletRepository,
     MikroOrmWalletCreationStore,
     MikroOrmWagerProcessingStore,
+    PendingReferenceRetryWorker,
     {
       provide: WALLET_REPOSITORY,
       useExisting: MikroOrmWalletRepository,

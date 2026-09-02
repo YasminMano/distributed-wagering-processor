@@ -189,6 +189,7 @@ describe('WagerTransaction creation and queries', () => {
       referenceTransactionId: 'internal-transaction-99',
       failureCode: undefined,
       processedAt,
+      retryAttempts: 0,
     });
 
     expect(transaction.status).toBe(WagerTransactionStatus.Processed);
@@ -219,7 +220,7 @@ describe('WagerTransaction state transitions', () => {
       'missing-bet',
     );
 
-    transaction.markPendingReference();
+    transaction.markPendingReference(new Date());
 
     expect(transaction.status).toBe(
       WagerTransactionStatus.PendingReference,
@@ -234,7 +235,7 @@ describe('WagerTransaction state transitions', () => {
     );
     const processedAt = new Date('2026-09-02T15:10:00.000Z');
 
-    transaction.markPendingReference();
+    transaction.markPendingReference(new Date());
     transaction.markProcessed('internal-bet-id', processedAt);
 
     expect(transaction.status).toBe(WagerTransactionStatus.Processed);
@@ -286,7 +287,7 @@ describe('WagerTransaction state transitions', () => {
     const failed = createTransaction(WagerTransactionKind.Win);
     failed.fail('PERSISTENCE_FAILURE');
 
-    expect(() => failed.markPendingReference()).toThrow();
+    expect(() => failed.markPendingReference(new Date())).toThrow();
   });
 });
 

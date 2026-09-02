@@ -89,6 +89,38 @@ class MikroOrmWagerProcessingUnitOfWork
       : null;
   }
 
+  async findDuePendingReferenceTransactionIds(
+    now: Date,
+  ): Promise<string[]> {
+    const entities = await this.em.find(
+      WagerTransactionPersistence,
+      {
+        status: WagerTransactionStatus.PendingReference,
+        nextRetryAt: { $lte: now },
+      },
+      {
+        limit: 100,
+        orderBy: { nextRetryAt: 'asc' },
+      },
+    );
+
+    return entities.map((entity) => entity.id);
+  }
+
+  async lockTransactionForPendingReferenceRetry(
+    transactionId: string,
+  ): Promise<WagerTransaction | null> {
+    const entity = await this.em.findOne(
+      WagerTransactionPersistence,
+      { id: transactionId },
+      { lockMode: LockMode.PESSIMISTIC_WRITE },
+    );
+
+    return entity
+      ? WagerTransactionMapper.toDomain(entity)
+      : null;
+  }
+
   async updateWallet(wallet: Wallet): Promise<void> {
     const money = wallet.balance.toJSON();
 
@@ -111,6 +143,24 @@ class MikroOrmWagerProcessingUnitOfWork
     await this.em.insert(
       WagerTransactionPersistence,
       WagerTransactionMapper.toPersistence(transaction),
+    );
+  }
+
+  async updateTransaction(
+    transaction: WagerTransaction,
+  ): Promise<void> {
+    await this.em.nativeUpdate(
+      WagerTransactionPersistence,
+      { id: transaction.id },
+      {
+        referenceTransaction:
+          transaction.referenceTransactionId ?? null,
+        status: transaction.status,
+        failureCode: transaction.failureCode ?? null,
+        processedAt: transaction.processedAt ?? null,
+        retryAttempts: transaction.retryAttempts,
+        nextRetryAt: transaction.nextRetryAt ?? null,
+      },
     );
   }
 

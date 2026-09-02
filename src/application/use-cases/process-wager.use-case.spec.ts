@@ -87,6 +87,30 @@ class FakeWagerProcessingUnitOfWork
     );
   }
 
+  async findDuePendingReferenceTransactionIds(
+    now: Date,
+  ): Promise<string[]> {
+    return this.transactions
+      .filter(
+        (transaction) =>
+          transaction.status ===
+            WagerTransactionStatus.PendingReference &&
+          transaction.nextRetryAt !== undefined &&
+          transaction.nextRetryAt <= now,
+      )
+      .map((transaction) => transaction.id);
+  }
+
+  async lockTransactionForPendingReferenceRetry(
+    transactionId: string,
+  ): Promise<WagerTransaction | null> {
+    return (
+      this.transactions.find(
+        (transaction) => transaction.id === transactionId,
+      ) ?? null
+    );
+  }
+
   async updateWallet(wallet: Wallet): Promise<void> {
     this.wallet = wallet;
     this.updateWalletCalls += 1;
@@ -96,6 +120,20 @@ class FakeWagerProcessingUnitOfWork
     transaction: WagerTransaction,
   ): Promise<void> {
     this.transactions.push(transaction);
+  }
+
+  async updateTransaction(
+    transaction: WagerTransaction,
+  ): Promise<void> {
+    const index = this.transactions.findIndex(
+      (existing) => existing.id === transaction.id,
+    );
+
+    if (index === -1) {
+      throw new Error('Transaction does not exist');
+    }
+
+    this.transactions[index] = transaction;
   }
 
   async insertLedgerEntry(

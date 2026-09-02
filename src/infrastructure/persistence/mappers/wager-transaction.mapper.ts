@@ -38,6 +38,8 @@ export class WagerTransactionMapper {
         entity.referenceTransaction ?? undefined,
       failureCode: entity.failureCode ?? undefined,
       processedAt: entity.processedAt ?? undefined,
+      retryAttempts: entity.retryAttempts,
+      nextRetryAt: entity.nextRetryAt ?? undefined,
     });
   }
 
@@ -65,6 +67,8 @@ export class WagerTransactionMapper {
       failureCode: transaction.failureCode ?? null,
       createdAt: transaction.createdAt,
       processedAt: transaction.processedAt ?? null,
+      retryAttempts: transaction.retryAttempts,
+      nextRetryAt: transaction.nextRetryAt ?? null,
     };
   }
 }

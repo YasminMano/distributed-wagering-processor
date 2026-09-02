@@ -54,6 +54,8 @@ export interface WagerTransactionState
   referenceTransactionId?: string;
   failureCode?: FailureCode;
   processedAt?: Date;
+  retryAttempts: number;
+  nextRetryAt?: Date;
 }
 
 export class WagerTransaction {
@@ -62,6 +64,8 @@ export class WagerTransaction {
   private _referenceTransactionId?: string;
   private _failureCode?: FailureCode;
   private _processedAt?: Date;
+  private _retryAttempts: number;
+  private _nextRetryAt?: Date;
 
   private constructor(
     public readonly id: string,
@@ -81,6 +85,8 @@ export class WagerTransaction {
     referenceTransactionId?: string,
     failureCode?: FailureCode,
     processedAt?: Date,
+    retryAttempts = 0,
+    nextRetryAt?: Date,
   ) {
     this.creationTime = new Date(createdAt.getTime());
     this._status = status;
@@ -88,6 +94,10 @@ export class WagerTransaction {
     this._failureCode = failureCode;
     this._processedAt = processedAt
       ? new Date(processedAt.getTime())
+      : undefined;
+    this._retryAttempts = retryAttempts;
+    this._nextRetryAt = nextRetryAt
+      ? new Date(nextRetryAt.getTime())
       : undefined;
   }
 
@@ -122,6 +132,10 @@ export class WagerTransaction {
       props.referenceExternalTransactionId,
       props.createdAt,
       WagerTransactionStatus.Pending,
+      undefined,
+      undefined,
+      undefined,
+      0,
     );
   }
 
@@ -146,6 +160,8 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.processedAt,
+      state.retryAttempts,
+      state.nextRetryAt,
     );
   }
 
@@ -171,6 +187,16 @@ export class WagerTransaction {
       : undefined;
   }
 
+  get retryAttempts(): number {
+    return this._retryAttempts;
+  }
+
+  get nextRetryAt(): Date | undefined {
+    return this._nextRetryAt
+      ? new Date(this._nextRetryAt.getTime())
+      : undefined;
+  }
+
   markProcessed(
     referenceTransactionId: string | undefined,
     at: Date,
@@ -187,9 +213,10 @@ export class WagerTransaction {
     this._referenceTransactionId = referenceTransactionId;
     this._failureCode = undefined;
     this._processedAt = new Date(at.getTime());
+    this.clearRetrySchedule();
   }
 
-  markPendingReference(): void {
+  markPendingReference(nextRetryAt: Date): void {
     this.assertNotTerminal('mark as pending reference');
 
     if (!this.requiresReference()) {
@@ -202,6 +229,27 @@ export class WagerTransaction {
     this._referenceTransactionId = undefined;
     this._failureCode = undefined;
     this._processedAt = undefined;
+    this._retryAttempts = 0;
+    this._nextRetryAt = new Date(nextRetryAt.getTime());
+  }
+
+  scheduleNextReferenceRetry(
+    retryAttempts: number,
+    nextRetryAt: Date,
+  ): void {
+    if (this._status !== WagerTransactionStatus.PendingReference) {
+      throw new InvalidTransactionStateError(
+        this._status,
+        'schedule pending reference retry',
+      );
+    }
+
+    if (retryAttempts <= this._retryAttempts) {
+      throw new Error('Retry attempts must increase');
+    }
+
+    this._retryAttempts = retryAttempts;
+    this._nextRetryAt = new Date(nextRetryAt.getTime());
   }
 
   reject(code: FailureCode): void {
@@ -211,6 +259,7 @@ export class WagerTransaction {
     this._status = WagerTransactionStatus.Rejected;
     this._failureCode = code;
     this._processedAt = undefined;
+    this.clearRetrySchedule();
   }
 
   fail(code: FailureCode): void {
@@ -220,6 +269,7 @@ export class WagerTransaction {
     this._status = WagerTransactionStatus.Failed;
     this._failureCode = code;
     this._processedAt = undefined;
+    this.clearRetrySchedule();
   }
 
   isTerminal(): boolean {
@@ -295,6 +345,11 @@ export class WagerTransaction {
         transition,
       );
     }
+  }
+
+  private clearRetrySchedule(): void {
+    this._retryAttempts = 0;
+    this._nextRetryAt = undefined;
   }
 
   private assertFailureCode(code: FailureCode): void {
