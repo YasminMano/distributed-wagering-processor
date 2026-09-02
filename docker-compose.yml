@@ -22,5 +22,28 @@ services:
       retries: 10
       start_period: 5s
 
+  ministack:
+    image: ministackorg/ministack:latest
+    container_name: wagering-ministack
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      MINISTACK_REGION: us-east-1
+    volumes:
+      - ./localstack/init:/etc/localstack/init
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
 volumes:
   postgres_data:

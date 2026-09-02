@@ -6,6 +6,18 @@ export const WAGER_PROCESSING_STORE = Symbol(
   'WAGER_PROCESSING_STORE',
 );
 
+export interface InboxMessageInput {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
+  receivedAt: Date;
+}
+
+export type InboxClaimResult =
+  | 'CLAIMED'
+  | 'DUPLICATE'
+  | 'CONFLICT';
+
 export interface WagerProcessingUnitOfWork {
   findWalletForUpdate(id: string): Promise<Wallet | null>;
 
@@ -43,6 +55,16 @@ export interface WagerProcessingUnitOfWork {
 
   insertLedgerEntry(
     entry: WalletLedgerEntry,
+  ): Promise<void>;
+
+  claimInboxMessage(
+    message: InboxMessageInput,
+  ): Promise<InboxClaimResult>;
+
+  markInboxMessageProcessed(
+    consumerName: string,
+    messageId: string,
+    processedAt: Date,
   ): Promise<void>;
 }
 

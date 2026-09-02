@@ -18,6 +18,7 @@
     "test:watch": "bun test --watch"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1124.0",
     "@mikro-orm/core": "^7.1.14",
     "@mikro-orm/decorators": "^7.1.14",
     "@mikro-orm/migrations": "^7.1.14",

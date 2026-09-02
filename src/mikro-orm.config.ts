@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+import { InboxMessagePersistence } from './infrastructure/persistence/entities/inbox-message.persistence';
+
 import { WalletLedgerEntryPersistence } from './infrastructure/persistence/entities/wallet-ledger-entry.persistence';
 import { WagerTransactionPersistence } from './infrastructure/persistence/entities/wager-transaction.persistence';
 import { Migrator } from '@mikro-orm/migrations';
@@ -16,6 +18,7 @@ export default defineConfig({
   clientUrl: databaseUrl,
 
   entities: [
+    InboxMessagePersistence,
     WalletPersistence,
     WagerTransactionPersistence,
     WalletLedgerEntryPersistence,

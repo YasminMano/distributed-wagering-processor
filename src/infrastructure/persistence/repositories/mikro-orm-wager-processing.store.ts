@@ -1,8 +1,12 @@
+import { randomUUID } from 'node:crypto';
+
 import { LockMode } from '@mikro-orm/core';
 import { Injectable } from '@nestjs/common';
 import { EntityManager } from '@mikro-orm/postgresql';
 
 import {
+  InboxClaimResult,
+  InboxMessageInput,
   WagerProcessingStore,
   WagerProcessingUnitOfWork,
 } from '../../../application/ports/wager-processing.store';
@@ -13,6 +17,7 @@ import {
   WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../../domain/entities/wager-transaction';
+import { InboxMessagePersistence } from '../entities/inbox-message.persistence';
 import { WagerTransactionPersistence } from '../entities/wager-transaction.persistence';
 import { WalletLedgerEntryPersistence } from '../entities/wallet-ledger-entry.persistence';
 import { WalletPersistence } from '../entities/wallet.persistence';
@@ -24,6 +29,75 @@ class MikroOrmWagerProcessingUnitOfWork
   implements WagerProcessingUnitOfWork
 {
   constructor(private readonly em: EntityManager) {}
+
+  async claimInboxMessage(
+    message: InboxMessageInput,
+  ): Promise<InboxClaimResult> {
+    const inserted = await this.em.execute<
+      Array<{ payload_hash: string }>
+    >(
+      `
+        insert into "inbox_messages" (
+          "id",
+          "consumer_name",
+          "message_id",
+          "payload_hash",
+          "received_at"
+        )
+        values (?, ?, ?, ?, ?)
+        on conflict ("consumer_name", "message_id")
+        do nothing
+        returning "payload_hash"
+      `,
+      [
+        randomUUID(),
+        message.consumerName,
+        message.messageId,
+        message.payloadHash,
+        message.receivedAt,
+      ],
+      'all',
+    );
+
+    if (inserted.length > 0) {
+      return 'CLAIMED';
+    }
+
+    const existing = await this.em.findOne(
+      InboxMessagePersistence,
+      {
+        consumerName: message.consumerName,
+        messageId: message.messageId,
+      },
+    );
+
+    if (!existing) {
+      throw new Error(
+        'Inbox message conflict could not be resolved',
+      );
+    }
+
+    return existing.payloadHash === message.payloadHash
+      ? 'DUPLICATE'
+      : 'CONFLICT';
+  }
+
+  async markInboxMessageProcessed(
+    consumerName: string,
+    messageId: string,
+    processedAt: Date,
+  ): Promise<void> {
+    await this.em.nativeUpdate(
+      InboxMessagePersistence,
+      {
+        consumerName,
+        messageId,
+      },
+      {
+        processedAt,
+      },
+    );
+  }
 
   async findWalletForUpdate(
     id: string,

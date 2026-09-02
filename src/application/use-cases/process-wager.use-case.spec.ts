@@ -6,6 +6,8 @@ import {
 } from 'bun:test';
 
 import {
+  InboxClaimResult,
+  InboxMessageInput,
   WagerProcessingStore,
   WagerProcessingUnitOfWork,
 } from '../ports/wager-processing.store';
@@ -135,6 +137,18 @@ class FakeWagerProcessingUnitOfWork
 
     this.transactions[index] = transaction;
   }
+
+  async claimInboxMessage(
+    _message: InboxMessageInput,
+  ): Promise<InboxClaimResult> {
+    return 'CLAIMED';
+  }
+
+  async markInboxMessageProcessed(
+    _consumerName: string,
+    _messageId: string,
+    _processedAt: Date,
+  ): Promise<void> {}
 
   async insertLedgerEntry(
     entry: WalletLedgerEntry,
