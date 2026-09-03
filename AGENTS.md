@@ -1,47 +1,46 @@
 # AGENTS.md
 
-## Project
+## Projeto
 
-Distributed Wagering Processor for the Jungle Gaming Backend Challenge.
+Distributed Wagering Processor para o desafio Backend da Jungle Gaming.
 
-## Goal
+## Objetivo
 
-Build a financially correct distributed wagering processor that remains
-consistent under duplicate delivery, concurrent processing and failures.
+Construir um processador distribuído de apostas financeiramente correto, que permaneça consistente diante de entregas duplicadas, processamento concorrente e falhas.
 
-## Required Stack
+## Stack Obrigatória
 
 - Bun 1.x
-- TypeScript strict mode
+- TypeScript em modo strict
 - NestJS
 - PostgreSQL
 - MikroORM
-- AWS SQS through LocalStack
+- AWS SQS por meio do LocalStack
 - Docker Compose
 
-## Engineering Principles
+## Princípios de Engenharia
 
-- Domain logic must not depend on NestJS.
-- Money must never use JavaScript `number`.
-- Financial writes must be transactional.
-- PostgreSQL is the final authority for consistency.
-- Idempotency must be persistent.
-- Ledger entries are immutable.
-- Events must never be published before the financial transaction commits.
-- The application must remain correct with multiple running instances.
+- A lógica de domínio não deve depender do NestJS.
+- Money nunca deve usar JavaScript `number`.
+- Escritas financeiras devem ser transacionais.
+- PostgreSQL é a autoridade final para consistência.
+- A idempotência deve ser persistente.
+- Lançamentos do ledger são imutáveis.
+- Eventos nunca devem ser publicados antes do commit da transação financeira.
+- A aplicação deve permanecer correta com múltiplas instâncias em execução.
 
-## Before Changing Code
+## Antes de Alterar o Código
 
-1. Identify the affected business invariant.
-2. Understand the transaction boundary.
-3. Consider concurrent execution.
-4. Consider duplicate delivery or retry.
-5. Prefer the smallest correct change.
-6. Do not weaken database constraints to make tests pass.
+1. Identifique a invariante de negócio afetada.
+2. Entenda o limite da transação.
+3. Considere execução concorrente.
+4. Considere entrega duplicada ou retry.
+5. Prefira a menor alteração correta.
+6. Não enfraqueça constraints do banco de dados apenas para fazer os testes passarem.
 
-## Validation
+## Validação
 
-Before considering a change complete, run the relevant checks:
+Antes de considerar uma alteração concluída, execute as verificações relevantes:
 
 ```bash
 bun run lint
@@ -51,14 +50,14 @@ bun test
 
 ## Git
 
-- Use focused commits.
-- Prefer Conventional Commits.
-- Review staged changes before committing.
-- Do not commit secrets or generated temporary files.
-- Use fixup commits only when correcting an existing commit.
+- Use commits focados.
+- Prefira Conventional Commits.
+- Revise as alterações staged antes de fazer commit.
+- Não faça commit de secrets nem de arquivos temporários gerados.
+- Use fixup commits apenas ao corrigir um commit existente.
 
-## Agent Git Safety
+## Segurança de Git para Agentes
 
-- Never commit changes without explicit user approval.
-- Never push changes to the remote repository without explicit user approval.
-- Always show the diff and validation results before proposing a commit.
+- Nunca faça commit de alterações sem aprovação explícita do usuário.
+- Nunca faça push de alterações para o repositório remoto sem aprovação explícita do usuário.
+- Sempre mostre o diff e os resultados de validação antes de propor um commit.

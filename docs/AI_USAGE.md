@@ -82,28 +82,26 @@ Durante a revisão, por exemplo, interpretações incorretas sobre regras de rev
 
 ---
 
-## O que foi realizado e validado pela candidata
+## Processo de desenvolvimento e validação
 
-O uso de IA não eliminou o trabalho de engenharia realizado durante o desafio.
+As ferramentas de IA foram utilizadas como apoio ao longo do desenvolvimento, mas o trabalho também envolveu pesquisa, experimentação, tomada de decisão e validação prática.
 
-A candidata:
+Ao longo do desafio, eu:
 
-- leu e decompôs o enunciado;
-- priorizou requisitos obrigatórios e eliminatórios;
-- pesquisou conceitos que não dominava previamente;
-- escolheu e discutiu alternativas técnicas;
-- configurou WSL, Docker Desktop, Bun, PostgreSQL e MiniStack;
-- criou e administrou o repositório e o fluxo de commits/releases;
-- executou migrations e validou reversibilidade;
-- executou manualmente os comandos e testes;
-- analisou logs e saídas reais do PostgreSQL/SQS;
-- reproduziu falhas e investigou suas causas;
-- rejeitou/corrigiu sugestões inconsistentes com o enunciado;
-- validou idempotência, concorrência, ledger, redelivery e Outbox;
-- executou o cenário de três processos reais;
-- revisou o resultado final antes da entrega.
+- analisei e organizei os requisitos do enunciado;
+- pesquisei conceitos de sistemas distribuídos e processamento financeiro necessários para a implementação;
+- avaliei alternativas de arquitetura e seus trade-offs;
+- configurei o ambiente com WSL, Docker Desktop, Bun, PostgreSQL e MiniStack;
+- acompanhei a evolução do repositório por meio de commits e releases;
+- executei migrations e validei sua reversibilidade;
+- executei os testes e analisei seus resultados;
+- investiguei falhas encontradas durante a execução;
+- confrontei sugestões das ferramentas de IA com o enunciado original quando surgiram divergências;
+- validei cenários de idempotência, concorrência, ledger, redelivery, Inbox e Outbox;
+- executei cenários com múltiplos processos independentes;
+- revisei a implementação e a documentação antes da entrega.
 
-Alguns temas — especialmente detalhes de concorrência distribuída, Inbox/Outbox e semântica de SQS — exigiram pesquisa e aprendizado durante o processo. Esse aprendizado fez parte do desenvolvimento, em vez de ser ocultado na entrega.
+Alguns dos conceitos utilizados no projeto, principalmente os relacionados a concorrência distribuída, Inbox/Outbox, idempotência e semântica de mensageria, exigiram estudo durante o desenvolvimento. Esse processo de pesquisa e validação fez parte da construção da solução.
 
 ---
 

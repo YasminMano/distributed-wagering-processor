@@ -1,105 +1,105 @@
 ---
 name: financial-domain-review
-description: Review financial domain changes for correctness, precision, invariants, idempotency and concurrency risks.
+description: Revisar alterações no domínio financeiro quanto à correção, precisão, invariantes, idempotência e riscos de concorrência.
 ---
 
-# Financial Domain Review
+# Revisão do Domínio Financeiro
 
-Use this skill when reviewing changes involving:
+Use esta skill ao revisar alterações envolvendo:
 
 - Money;
 - Wallet;
 - WagerTransaction;
 - WalletLedgerEntry;
-- REFUND or ROLLBACK behavior;
-- financial persistence;
-- balance-changing operations.
+- comportamento de REFUND ou ROLLBACK;
+- persistência financeira;
+- operações que alteram saldo.
 
-## Review Procedure
+## Procedimento de Revisão
 
-### 1. Money Precision
+### 1. Precisão Monetária
 
-Verify that:
+Verifique se:
 
-- JavaScript `number` is never used to represent monetary values;
-- monetary inputs are parsed from decimal strings;
-- scientific notation is rejected;
-- invalid or excessive decimal scale is rejected;
-- arithmetic uses exact decimal operations;
-- serialized monetary values use exactly two decimal places.
+- JavaScript `number` nunca é usado para representar valores monetários;
+- valores monetários de entrada são interpretados a partir de strings decimais;
+- notação científica é rejeitada;
+- formatos inválidos ou escala decimal excessiva são rejeitados;
+- operações aritméticas usam cálculos decimais exatos;
+- valores monetários serializados usam exatamente duas casas decimais.
 
-### 2. Currency Safety
+### 2. Segurança de Moeda
 
-Verify that:
+Verifique se:
 
-- every Money value contains a currency;
-- arithmetic between different currencies is rejected;
-- comparisons between different currencies are rejected when applicable.
+- todo valor Money contém uma moeda;
+- operações aritméticas entre moedas diferentes são rejeitadas;
+- comparações entre moedas diferentes são rejeitadas quando aplicável.
 
-### 3. Immutability
+### 3. Imutabilidade
 
-Verify that:
+Verifique se:
 
-- Money objects are immutable;
-- ledger entries are never mutated or deleted;
-- operations return new values instead of mutating existing financial values.
+- objetos Money são imutáveis;
+- lançamentos do ledger nunca são alterados ou excluídos;
+- operações retornam novos valores em vez de alterar valores financeiros existentes.
 
-### 4. Wallet Invariants
+### 4. Invariantes da Wallet
 
-Verify that:
+Verifique se:
 
-- wallet balance never becomes negative;
-- wallet version changes only when the balance changes;
-- every balance change has exactly one corresponding ledger entry.
+- o saldo da wallet nunca fica negativo;
+- a versão da wallet muda somente quando o saldo muda;
+- toda alteração de saldo possui exatamente um lançamento correspondente no ledger.
 
-### 5. Idempotency
+### 5. Idempotência
 
-Verify that:
+Verifique se:
 
-- duplicate delivery cannot cause duplicate financial effects;
-- idempotency is persisted rather than stored only in application memory;
-- conflicting payloads using the same idempotency key are detected.
+- entregas duplicadas não podem causar efeitos financeiros duplicados;
+- a idempotência é persistida, e não mantida apenas em memória da aplicação;
+- payloads conflitantes usando a mesma idempotency key são detectados.
 
-### 6. Concurrency
+### 6. Concorrência
 
-Verify that:
+Verifique se:
 
-- read-calculate-write sequences cannot cause lost updates;
-- correctness does not depend on a single application instance;
-- locking or atomic database operations are scoped to the wallet rather than globally.
+- sequências de leitura-cálculo-escrita não podem causar lost updates;
+- a correção não depende de uma única instância da aplicação;
+- locks ou operações atômicas no banco são restritos à wallet, e não globais.
 
-### 7. Transaction Boundaries
+### 7. Limites Transacionais
 
-Verify that related financial writes are atomic.
+Verifique se escritas financeiras relacionadas são atômicas.
 
-When applicable, the same SQL transaction should contain:
+Quando aplicável, a mesma transação SQL deve conter:
 
-- transaction state;
-- wallet balance change;
-- ledger entry;
-- inbox state;
-- outbox event.
+- estado da transação;
+- alteração do saldo da wallet;
+- lançamento no ledger;
+- estado da Inbox;
+- evento da Outbox.
 
-Events must not be published before the financial transaction commits.
+Eventos não devem ser publicados antes do commit da transação financeira.
 
-### 8. Tests
+### 8. Testes
 
-Check that relevant tests cover:
+Verifique se os testes relevantes cobrem:
 
-- successful behavior;
-- invalid monetary inputs;
-- currency mismatches;
-- insufficient balance;
-- duplicate execution;
-- concurrent execution;
-- financial invariants.
+- comportamento de sucesso;
+- entradas monetárias inválidas;
+- incompatibilidade de moeda;
+- saldo insuficiente;
+- execução duplicada;
+- execução concorrente;
+- invariantes financeiras.
 
-## Review Output
+## Saída da Revisão
 
-Report findings using:
+Relate os achados usando:
 
-- CRITICAL: can violate financial correctness;
-- WARNING: risky design or missing coverage;
-- OK: invariant explicitly verified.
+- CRITICAL: pode violar a correção financeira;
+- WARNING: design arriscado ou cobertura ausente;
+- OK: invariante verificada explicitamente.
 
-Do not recommend weakening database constraints or domain invariants merely to make tests pass.
+Não recomende enfraquecer constraints do banco de dados ou invariantes de domínio apenas para fazer os testes passarem.
