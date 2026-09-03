@@ -13,6 +13,7 @@
     "target": "ES2023",
     "types": ["node", "bun"],
     "sourceMap": true,
+    "rootDir": "./src",
     "outDir": "./dist",
     "incremental": true,
     "skipLibCheck": true,
